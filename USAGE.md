@@ -5,15 +5,11 @@ A browser-based video editor built with SvelteKit + FFmpeg.wasm. Runs entirely i
 ## Quick Start
 
 ```bash
-# Install dependencies
-npm install
-
-# Start development server
-npm run dev
-
-# Open in browser
-open http://localhost:5173
+bun install
+bun run dev
 ```
+
+Open [http://localhost:5173](http://localhost:5173)
 
 > Works in **Chrome**, **Brave**, **Edge**, and other Chromium browsers. Firefox has limited support.
 
@@ -31,21 +27,21 @@ Videos with codecs the browser can't play natively (HEVC, ProRes — common in `
 ## Editor Layout
 
 ```
-┌──────────────────────────────────────────────────┐
-│                    Top Bar                        │
-├──────────────┬───────────────────────────────────┤
-│              │                                   │
-│  Media       │        Preview Panel              │
-│  Browser     │     (video preview + controls)    │
-│              │                                   │
-├──────────────┴───────────────────────────────────┤
-│                                                  │
-│               Timeline Panel                     │
-│    (tracks, clips, playhead, ruler)              │
-│                                                  │
-├──────────────────────────────────────────────────┤
-│                  Status Bar                      │
-└──────────────────────────────────────────────────┘
++--------------------------------------------------+
+|                    Top Bar                        |
++----------------+---------------------------------+
+|                |                                  |
+|  Media         |        Preview Panel             |
+|  Browser       |     (video preview + controls)   |
+|                |                                  |
++----------------+---------------------------------+
+|                                                   |
+|               Timeline Panel                      |
+|    (tracks, clips, playhead, ruler)               |
+|                                                   |
++---------------------------------------------------+
+|                  Status Bar                       |
++---------------------------------------------------+
 ```
 
 ## Working with Clips
@@ -122,13 +118,16 @@ All editing operations (add, remove, move, split, trim) are fully undoable.
 
 1. Press **Ctrl+E** or click the Export button
 2. Configure:
-   - **Format**: MP4, WebM, MKV
-   - **Resolution**: 720p, 1080p, 1440p, 4K
+   - **Format**: MP4, WebM, MKV, AVI, MOV
+   - **Resolution**: 480p, 720p, 1080p, 4K
    - **Bitrate / Quality**
    - **Codec settings**
 3. Click Export — the file downloads when processing completes
 
-Export is handled entirely by FFmpeg.wasm in a Web Worker (no server needed).
+Export uses 3 strategies depending on complexity:
+- **Single clip, no effects** — stream copy (instant, no re-encoding)
+- **Multi-clip, no effects** — trim + concat with stream copy (fast)
+- **With text/transitions** — full re-encode via filter_complex
 
 ## All Keyboard Shortcuts
 
@@ -164,39 +163,32 @@ Export is handled entirely by FFmpeg.wasm in a Web Worker (no server needed).
 Session-based — all state lives in memory. Nothing persists after closing the tab.
 
 Browser (Main Thread)              Browser (Web Worker)
-┌────────────────────┐             ┌──────────────────┐
-│  Svelte 5 UI       │             │  FFmpeg.wasm     │
-│  ├─ State (runes)  │  messages   │  ├─ Transcode    │
-│  ├─ Commands       │◄───────────►│  ├─ Export       │
-│  ├─ Playback       │             │  └─ Thumbnails   │
-│  └─ Canvas render  │             └──────────────────┘
-└────────────────────┘
++--------------------+             +------------------+
+|  Svelte 5 UI       |             |  FFmpeg.wasm     |
+|  +- State (runes)  |  messages   |  +- Transcode    |
+|  +- Commands       |<----------->|  +- Export       |
+|  +- Playback       |             |  +- Thumbnails   |
+|  +- Canvas render  |             +------------------+
++--------------------+
 ```
 
 - **State**: Svelte 5 runes (`$state`, `$derived`, `$effect`)
 - **Commands**: Full undo/redo via Command pattern with atomic transactions
-- **Playback**: HTML5 `<video>` elements for native decode + Canvas 2D for compositing
+- **Playback**: Native `<video>` elements for decode + audio, canvas overlay for text
 - **FFmpeg**: Runs in Web Worker — never blocks UI
-- **Audio**: Remotion-style — video elements play natively, lazy drift correction (0.45s threshold)
+- **Audio**: Video elements play natively, lazy drift correction (0.45s threshold)
 
 ## Build & Deploy
 
 ```bash
-# Development
-npm run dev
-
-# Production build
-npm run build
-
-# Preview production build
-npm run preview
-
-# Type checking
-npm run check
+bun run dev          # Development
+bun run build        # Production build
+bun run preview      # Preview production build
+bun run check        # Type checking
 ```
 
 ### Requirements
-- Node.js 18+
+- Bun (or Node.js 18+)
 - Modern Chromium browser (Chrome, Brave, Edge)
 - Cross-Origin Isolation headers (configured in `vite.config.ts` and `hooks.server.ts`)
 
@@ -214,6 +206,5 @@ Cross-Origin-Embedder-Policy: credentialless
 | App won't load | Check browser console. Ensure COOP/COEP headers are present. |
 | Video won't import | Format may need transcoding. Wait for FFmpeg to finish loading. |
 | No audio | Click anywhere in the editor first (browser autoplay policy). |
-| Low preview quality | Resize the preview panel larger. Canvas renders at display resolution. |
 | Export fails | Check browser console for FFmpeg errors. Ensure enough memory. |
 | .mov files slow to import | Mac .mov files (HEVC/ProRes) are auto-transcoded to H.264 — this takes time. |
