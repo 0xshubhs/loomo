@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS videos;
+DROP TYPE IF EXISTS share_mode;
+DROP TYPE IF EXISTS video_status;
