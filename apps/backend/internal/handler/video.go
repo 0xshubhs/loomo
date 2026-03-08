@@ -1,13 +1,17 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
 
+	"github.com/dittoo/backend/internal/database"
 	"github.com/dittoo/backend/internal/middleware"
+	"github.com/dittoo/backend/internal/storage"
 	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type createVideoRequest struct {
@@ -20,7 +24,7 @@ type videoResponse struct {
 	Title           string  `json:"title"`
 	Description     *string `json:"description"`
 	Status          string  `json:"status"`
-	DurationMs      *int    `json:"duration_ms"`
+	DurationMs      *int32  `json:"duration_ms"`
 	RecordingSource *string `json:"recording_source"`
 	ThumbnailURL    *string `json:"thumbnail_url"`
 	GifURL          *string `json:"gif_url"`
@@ -48,37 +52,44 @@ func (h *Handler) CreateVideo(w http.ResponseWriter, r *http.Request) {
 		req.Title = "Untitled Recording"
 	}
 
-	videoID := uuid.New()
-	sourceKey := "videos/" + userID + "/" + videoID.String() + "/source.webm"
-	now := time.Now()
-
-	_, err := h.pool.Exec(r.Context(),
-		`INSERT INTO videos (id, user_id, title, recording_source, source_key, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $6)`,
-		videoID, userID, req.Title, req.RecordingSource, sourceKey, now,
-	)
+	uid := parseUUID(userID)
+	video, err := h.db.CreateVideo(r.Context(), database.CreateVideoParams{
+		UserID:          uid,
+		Title:           req.Title,
+		RecordingSource: pgtype.Text{String: req.RecordingSource, Valid: req.RecordingSource != ""},
+	})
 	if err != nil {
 		h.logger.Error().Err(err).Msg("failed to create video")
 		h.error(w, http.StatusInternalServerError, "failed to create video")
 		return
 	}
 
-	// TODO: Generate presigned upload URL from R2/S3
-	uploadURL := h.config.S3Endpoint + "/" + h.config.S3Bucket + "/" + sourceKey
+	videoIDStr := uuidToString(video.ID)
+	sourceKey := storage.VideoSourceKey(userID, videoIDStr)
+
+	// Set the upload key on the video
+	err = h.db.SetVideoUpload(r.Context(), database.SetVideoUploadParams{
+		ID:        video.ID,
+		SourceKey: pgtype.Text{String: sourceKey, Valid: true},
+	})
+	if err != nil {
+		h.logger.Error().Err(err).Msg("failed to set video upload key")
+		h.error(w, http.StatusInternalServerError, "failed to create video")
+		return
+	}
+
+	// Generate presigned upload URL
+	uploadURL, err := h.storage.GeneratePresignedPutURL(sourceKey, "video/webm", 1*time.Hour)
+	if err != nil {
+		h.logger.Error().Err(err).Msg("failed to generate presigned URL")
+		h.error(w, http.StatusInternalServerError, "failed to generate upload URL")
+		return
+	}
 
 	h.json(w, http.StatusCreated, map[string]interface{}{
-		"video": videoResponse{
-			ID:              videoID.String(),
-			Title:           req.Title,
-			Status:          "uploading",
-			RecordingSource: &req.RecordingSource,
-			ShareMode:       "unlisted",
-			ShareURL:        h.config.FrontendURL + "/share/" + videoID.String(),
-			CreatedAt:       now.Format(time.RFC3339),
-			UpdatedAt:       now.Format(time.RFC3339),
-		},
+		"video":            videoToResponse(video, h.config.CDNURL, h.config.FrontendURL),
 		"upload_url":       uploadURL,
-		"upload_expires_at": now.Add(1 * time.Hour).Format(time.RFC3339),
+		"upload_expires_at": time.Now().Add(1 * time.Hour).Format(time.RFC3339),
 	})
 }
 
@@ -86,34 +97,24 @@ func (h *Handler) GetVideo(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r.Context())
 	videoID := chi.URLParam(r, "videoID")
 
-	var v videoResponse
-	var description, recordingSource, thumbnailKey, gifKey, hlsKey *string
-	var durationMs *int
-	var createdAt, updatedAt time.Time
-
-	err := h.pool.QueryRow(r.Context(),
-		`SELECT id, title, description, status, duration_ms, recording_source,
-		        thumbnail_key, gif_key, hls_key, share_mode, created_at, updated_at
-		 FROM videos WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`,
-		videoID, userID,
-	).Scan(&v.ID, &v.Title, &description, &v.Status, &durationMs, &recordingSource,
-		&thumbnailKey, &gifKey, &hlsKey, &v.ShareMode, &createdAt, &updatedAt)
+	vid := parseUUID(videoID)
+	video, err := h.db.GetVideoByID(r.Context(), vid)
+	if errors.Is(err, pgx.ErrNoRows) {
+		h.error(w, http.StatusNotFound, "video not found")
+		return
+	}
 	if err != nil {
+		h.error(w, http.StatusInternalServerError, "failed to get video")
+		return
+	}
+
+	// Ensure the video belongs to the user
+	if uuidToString(video.UserID) != userID {
 		h.error(w, http.StatusNotFound, "video not found")
 		return
 	}
 
-	v.Description = description
-	v.DurationMs = durationMs
-	v.RecordingSource = recordingSource
-	v.ThumbnailURL = h.buildCDNURL(thumbnailKey)
-	v.GifURL = h.buildCDNURL(gifKey)
-	v.HlsURL = h.buildCDNURL(hlsKey)
-	v.ShareURL = h.config.FrontendURL + "/share/" + v.ID
-	v.CreatedAt = createdAt.Format(time.RFC3339)
-	v.UpdatedAt = updatedAt.Format(time.RFC3339)
-
-	h.json(w, http.StatusOK, v)
+	h.json(w, http.StatusOK, videoToResponse(video, h.config.CDNURL, h.config.FrontendURL))
 }
 
 func (h *Handler) ListVideos(w http.ResponseWriter, r *http.Request) {
@@ -129,56 +130,36 @@ func (h *Handler) ListVideos(w http.ResponseWriter, r *http.Request) {
 	}
 	offset := (page - 1) * perPage
 
-	rows, err := h.pool.Query(r.Context(),
-		`SELECT id, title, description, status, duration_ms, recording_source,
-		        thumbnail_key, gif_key, hls_key, share_mode, created_at, updated_at
-		 FROM videos WHERE user_id = $1 AND deleted_at IS NULL
-		 ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
-		userID, perPage, offset,
-	)
+	uid := parseUUID(userID)
+
+	videos, err := h.db.ListVideosByUser(r.Context(), database.ListVideosByUserParams{
+		UserID: uid,
+		Limit:  int32(perPage),
+		Offset: int32(offset),
+	})
 	if err != nil {
 		h.error(w, http.StatusInternalServerError, "failed to list videos")
 		return
 	}
-	defer rows.Close()
 
-	videos := []videoResponse{}
-	for rows.Next() {
-		var v videoResponse
-		var description, recordingSource, thumbnailKey, gifKey, hlsKey *string
-		var durationMs *int
-		var createdAt, updatedAt time.Time
-
-		if err := rows.Scan(&v.ID, &v.Title, &description, &v.Status, &durationMs, &recordingSource,
-			&thumbnailKey, &gifKey, &hlsKey, &v.ShareMode, &createdAt, &updatedAt); err != nil {
-			continue
-		}
-
-		v.Description = description
-		v.DurationMs = durationMs
-		v.RecordingSource = recordingSource
-		v.ThumbnailURL = h.buildCDNURL(thumbnailKey)
-		v.GifURL = h.buildCDNURL(gifKey)
-		v.HlsURL = h.buildCDNURL(hlsKey)
-		v.ShareURL = h.config.FrontendURL + "/share/" + v.ID
-		v.CreatedAt = createdAt.Format(time.RFC3339)
-		v.UpdatedAt = updatedAt.Format(time.RFC3339)
-		videos = append(videos, v)
+	total, err := h.db.CountVideosByUser(r.Context(), uid)
+	if err != nil {
+		h.error(w, http.StatusInternalServerError, "failed to count videos")
+		return
 	}
 
-	var total int
-	h.pool.QueryRow(r.Context(),
-		`SELECT COUNT(*) FROM videos WHERE user_id = $1 AND deleted_at IS NULL`,
-		userID,
-	).Scan(&total)
+	responseVideos := make([]videoResponse, 0, len(videos))
+	for _, v := range videos {
+		responseVideos = append(responseVideos, videoToResponse(v, h.config.CDNURL, h.config.FrontendURL))
+	}
 
 	h.json(w, http.StatusOK, map[string]interface{}{
-		"videos": videos,
+		"videos": responseVideos,
 		"pagination": map[string]interface{}{
 			"page":     page,
 			"per_page": perPage,
 			"total":    total,
-			"has_more": offset+perPage < total,
+			"has_more": int64(offset+perPage) < total,
 		},
 	})
 }
@@ -197,22 +178,45 @@ func (h *Handler) UpdateVideo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.pool.Exec(r.Context(),
-		`UPDATE videos SET
-			title = COALESCE($3, title),
-			description = COALESCE($4, description),
-			share_mode = COALESCE($5::share_mode, share_mode),
-			updated_at = NOW()
-		 WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`,
-		videoID, userID, req.Title, req.Description, req.ShareMode,
-	)
+	vid := parseUUID(videoID)
+
+	// Verify ownership first
+	video, err := h.db.GetVideoByID(r.Context(), vid)
+	if errors.Is(err, pgx.ErrNoRows) {
+		h.error(w, http.StatusNotFound, "video not found")
+		return
+	}
 	if err != nil {
-		h.error(w, http.StatusInternalServerError, "failed to update video")
+		h.error(w, http.StatusInternalServerError, "failed to get video")
+		return
+	}
+	if uuidToString(video.UserID) != userID {
+		h.error(w, http.StatusNotFound, "video not found")
 		return
 	}
 
-	if result.RowsAffected() == 0 {
-		h.error(w, http.StatusNotFound, "video not found")
+	params := database.UpdateVideoParams{
+		ID: vid,
+	}
+	if req.Title != nil {
+		params.Title = *req.Title
+	} else {
+		params.Title = video.Title
+	}
+	if req.Description != nil {
+		params.Description = pgtype.Text{String: *req.Description, Valid: true}
+	} else {
+		params.Description = video.Description
+	}
+	if req.ShareMode != nil {
+		params.ShareMode = database.ShareMode(*req.ShareMode)
+	} else {
+		params.ShareMode = video.ShareMode
+	}
+
+	err = h.db.UpdateVideo(r.Context(), params)
+	if err != nil {
+		h.error(w, http.StatusInternalServerError, "failed to update video")
 		return
 	}
 
@@ -223,17 +227,26 @@ func (h *Handler) DeleteVideo(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r.Context())
 	videoID := chi.URLParam(r, "videoID")
 
-	result, err := h.pool.Exec(r.Context(),
-		`UPDATE videos SET deleted_at = NOW() WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`,
-		videoID, userID,
-	)
+	vid := parseUUID(videoID)
+
+	// Verify ownership
+	video, err := h.db.GetVideoByID(r.Context(), vid)
+	if errors.Is(err, pgx.ErrNoRows) {
+		h.error(w, http.StatusNotFound, "video not found")
+		return
+	}
 	if err != nil {
-		h.error(w, http.StatusInternalServerError, "failed to delete video")
+		h.error(w, http.StatusInternalServerError, "failed to get video")
+		return
+	}
+	if uuidToString(video.UserID) != userID {
+		h.error(w, http.StatusNotFound, "video not found")
 		return
 	}
 
-	if result.RowsAffected() == 0 {
-		h.error(w, http.StatusNotFound, "video not found")
+	err = h.db.SoftDeleteVideo(r.Context(), vid)
+	if err != nil {
+		h.error(w, http.StatusInternalServerError, "failed to delete video")
 		return
 	}
 
@@ -244,44 +257,56 @@ func (h *Handler) CompleteVideo(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r.Context())
 	videoID := chi.URLParam(r, "videoID")
 
+	vid := parseUUID(videoID)
+
+	// Verify ownership and status
+	video, err := h.db.GetVideoByID(r.Context(), vid)
+	if errors.Is(err, pgx.ErrNoRows) {
+		h.error(w, http.StatusNotFound, "video not found")
+		return
+	}
+	if err != nil {
+		h.error(w, http.StatusInternalServerError, "failed to get video")
+		return
+	}
+	if uuidToString(video.UserID) != userID {
+		h.error(w, http.StatusNotFound, "video not found")
+		return
+	}
+	if video.Status != database.VideoStatusUploading {
+		h.error(w, http.StatusBadRequest, "video is not in uploading state")
+		return
+	}
+
 	// Update status to processing
-	result, err := h.pool.Exec(r.Context(),
-		`UPDATE videos SET status = 'processing', updated_at = NOW()
-		 WHERE id = $1 AND user_id = $2 AND status = 'uploading' AND deleted_at IS NULL`,
-		videoID, userID,
-	)
+	err = h.db.UpdateVideoStatus(r.Context(), database.UpdateVideoStatusParams{
+		ID:     vid,
+		Status: database.VideoStatusProcessing,
+	})
 	if err != nil {
 		h.error(w, http.StatusInternalServerError, "failed to complete video")
 		return
 	}
 
-	if result.RowsAffected() == 0 {
-		h.error(w, http.StatusNotFound, "video not found or already processing")
-		return
-	}
-
 	// Create processing jobs
-	jobTypes := []string{"transcode", "thumbnail", "transcribe"}
+	jobTypes := []database.JobType{database.JobTypeTranscode, database.JobTypeThumbnail, database.JobTypeTranscribe}
 	jobs := []map[string]interface{}{}
 
 	for _, jt := range jobTypes {
-		jobID := uuid.New()
-		_, err := h.pool.Exec(r.Context(),
-			`INSERT INTO processing_jobs (id, video_id, type) VALUES ($1, $2, $3::job_type)`,
-			jobID, videoID, jt,
-		)
+		job, err := h.db.CreateProcessingJob(r.Context(), database.CreateProcessingJobParams{
+			VideoID: vid,
+			Type:    jt,
+		})
 		if err != nil {
-			h.logger.Error().Err(err).Str("job_type", jt).Msg("failed to create processing job")
+			h.logger.Error().Err(err).Str("job_type", string(jt)).Msg("failed to create processing job")
 			continue
 		}
 		jobs = append(jobs, map[string]interface{}{
-			"id":     jobID.String(),
-			"type":   jt,
-			"status": "pending",
+			"id":     uuidToString(job.ID),
+			"type":   string(job.Type),
+			"status": string(job.Status),
 		})
 	}
-
-	// TODO: Dispatch River jobs for actual processing
 
 	h.json(w, http.StatusOK, map[string]interface{}{
 		"video":           map[string]string{"id": videoID, "status": "processing"},
@@ -292,60 +317,85 @@ func (h *Handler) CompleteVideo(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetShareVideo(w http.ResponseWriter, r *http.Request) {
 	videoID := chi.URLParam(r, "id")
 
-	var id, title, shareMode, creatorName string
-	var description *string
-	var durationMs *int
-	var hlsKey, thumbnailKey, gifKey, creatorAvatar *string
-	var createdAt time.Time
-
-	err := h.pool.QueryRow(r.Context(),
-		`SELECT v.id, v.title, v.description, v.status, v.duration_ms,
-		        v.hls_key, v.thumbnail_key, v.gif_key, v.share_mode,
-		        v.created_at, u.name, u.avatar_url
-		 FROM videos v JOIN users u ON v.user_id = u.id
-		 WHERE v.id = $1 AND v.deleted_at IS NULL AND v.status = 'ready'`,
-		videoID,
-	).Scan(&id, &title, &description, new(string), &durationMs,
-		&hlsKey, &thumbnailKey, &gifKey, &shareMode,
-		&createdAt, &creatorName, &creatorAvatar)
+	vid := parseUUID(videoID)
+	sv, err := h.db.GetShareVideo(r.Context(), vid)
+	if errors.Is(err, pgx.ErrNoRows) {
+		h.error(w, http.StatusNotFound, "video not found")
+		return
+	}
 	if err != nil {
 		h.error(w, http.StatusNotFound, "video not found")
 		return
 	}
 
-	if shareMode == "private" {
-		h.error(w, http.StatusForbidden, "this video is private")
-		return
-	}
-
 	h.json(w, http.StatusOK, map[string]interface{}{
-		"id":            id,
-		"title":         title,
-		"description":   description,
-		"duration_ms":   durationMs,
-		"hls_url":       h.buildCDNURLValue(hlsKey),
-		"thumbnail_url": h.buildCDNURLValue(thumbnailKey),
-		"gif_url":       h.buildCDNURLValue(gifKey),
-		"share_mode":    shareMode,
-		"created_at":    createdAt.Format(time.RFC3339),
+		"id":            uuidToString(sv.ID),
+		"title":         sv.Title,
+		"description":   pgTextToPtr(sv.Description),
+		"duration_ms":   pgInt4ToPtr(sv.DurationMs),
+		"hls_url":       buildCDNURLValue(h.config.CDNURL, sv.HlsKey),
+		"thumbnail_url": buildCDNURLValue(h.config.CDNURL, sv.ThumbnailKey),
+		"gif_url":       buildCDNURLValue(h.config.CDNURL, sv.GifKey),
+		"share_mode":    string(sv.ShareMode),
+		"created_at":    sv.CreatedAt.Time.Format(time.RFC3339),
 		"creator": map[string]interface{}{
-			"name":       creatorName,
-			"avatar_url": creatorAvatar,
+			"name":       sv.AuthorName,
+			"avatar_url": pgTextToPtr(sv.AuthorAvatar),
 		},
 	})
 }
 
-func (h *Handler) buildCDNURL(key *string) *string {
-	if key == nil || *key == "" {
+func videoToResponse(v database.Video, cdnURL, frontendURL string) videoResponse {
+	resp := videoResponse{
+		ID:        uuidToString(v.ID),
+		Title:     v.Title,
+		Status:    string(v.Status),
+		ShareMode: string(v.ShareMode),
+	}
+
+	resp.Description = pgTextToPtr(v.Description)
+	resp.RecordingSource = pgTextToPtr(v.RecordingSource)
+	resp.DurationMs = pgInt4ToPtr(v.DurationMs)
+	resp.ThumbnailURL = buildCDNURLPtr(cdnURL, v.ThumbnailKey)
+	resp.GifURL = buildCDNURLPtr(cdnURL, v.GifKey)
+	resp.HlsURL = buildCDNURLPtr(cdnURL, v.HlsKey)
+	resp.ShareURL = frontendURL + "/share/" + resp.ID
+
+	if v.CreatedAt.Valid {
+		resp.CreatedAt = v.CreatedAt.Time.Format(time.RFC3339)
+	}
+	if v.UpdatedAt.Valid {
+		resp.UpdatedAt = v.UpdatedAt.Time.Format(time.RFC3339)
+	}
+
+	return resp
+}
+
+func pgTextToPtr(t pgtype.Text) *string {
+	if !t.Valid {
 		return nil
 	}
-	url := h.config.CDNURL + "/" + *key
+	return &t.String
+}
+
+func pgInt4ToPtr(i pgtype.Int4) *int32 {
+	if !i.Valid {
+		return nil
+	}
+	return &i.Int32
+}
+
+func buildCDNURLPtr(cdnURL string, key pgtype.Text) *string {
+	if !key.Valid || key.String == "" {
+		return nil
+	}
+	url := cdnURL + "/" + key.String
 	return &url
 }
 
-func (h *Handler) buildCDNURLValue(key *string) string {
-	if key == nil || *key == "" {
+func buildCDNURLValue(cdnURL string, key pgtype.Text) string {
+	if !key.Valid || key.String == "" {
 		return ""
 	}
-	return h.config.CDNURL + "/" + *key
+	return cdnURL + "/" + key.String
 }

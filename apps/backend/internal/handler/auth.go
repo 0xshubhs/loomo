@@ -4,11 +4,15 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"time"
 
+	"github.com/dittoo/backend/internal/database"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -65,20 +69,19 @@ func (h *Handler) Signup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id := uuid.New()
-	now := time.Now()
-
-	_, err = h.pool.Exec(r.Context(),
-		`INSERT INTO users (id, email, name, password_hash, auth_provider, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, 'email', $5, $5)`,
-		id, req.Email, req.Name, string(hash), now,
-	)
+	user, err := h.db.CreateUser(r.Context(), database.CreateUserParams{
+		Email:        req.Email,
+		Name:         req.Name,
+		PasswordHash: pgtype.Text{String: string(hash), Valid: true},
+		AuthProvider: "email",
+	})
 	if err != nil {
+		// Unique constraint violation on email
 		h.error(w, http.StatusConflict, "email already registered")
 		return
 	}
 
-	accessToken, refreshToken, err := h.generateTokens(r.Context(), id.String())
+	accessToken, refreshToken, err := h.generateTokens(r.Context(), uuidToString(user.ID))
 	if err != nil {
 		h.logger.Error().Err(err).Msg("failed to generate tokens")
 		h.error(w, http.StatusInternalServerError, "internal error")
@@ -86,13 +89,7 @@ func (h *Handler) Signup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.json(w, http.StatusCreated, authResponse{
-		User: userResponse{
-			ID:        id.String(),
-			Email:     req.Email,
-			Name:      req.Name,
-			AvatarURL: nil,
-			CreatedAt: now.Format(time.RFC3339),
-		},
+		User:         userToResponse(user),
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
 	})
@@ -110,25 +107,23 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var id, name, passwordHash string
-	var avatarURL *string
-	var createdAt time.Time
-
-	err := h.pool.QueryRow(r.Context(),
-		`SELECT id, name, password_hash, avatar_url, created_at FROM users WHERE email = $1`,
-		req.Email,
-	).Scan(&id, &name, &passwordHash, &avatarURL, &createdAt)
+	user, err := h.db.GetUserByEmail(r.Context(), req.Email)
 	if err != nil {
 		h.error(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(req.Password)); err != nil {
+	if !user.PasswordHash.Valid {
 		h.error(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
 
-	accessToken, refreshToken, err := h.generateTokens(r.Context(), id)
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash.String), []byte(req.Password)); err != nil {
+		h.error(w, http.StatusUnauthorized, "invalid credentials")
+		return
+	}
+
+	accessToken, refreshToken, err := h.generateTokens(r.Context(), uuidToString(user.ID))
 	if err != nil {
 		h.logger.Error().Err(err).Msg("failed to generate tokens")
 		h.error(w, http.StatusInternalServerError, "internal error")
@@ -136,13 +131,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.json(w, http.StatusOK, authResponse{
-		User: userResponse{
-			ID:        id,
-			Email:     req.Email,
-			Name:      name,
-			AvatarURL: avatarURL,
-			CreatedAt: createdAt.Format(time.RFC3339),
-		},
+		User:         userToResponse(user),
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
 	})
@@ -157,54 +146,34 @@ func (h *Handler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 
 	tokenHash := hashToken(req.RefreshToken)
 
-	var userID string
-	var expiresAt time.Time
-	var tokenID string
-	err := h.pool.QueryRow(r.Context(),
-		`SELECT id, user_id, expires_at FROM refresh_tokens WHERE token_hash = $1`,
-		tokenHash,
-	).Scan(&tokenID, &userID, &expiresAt)
+	rt, err := h.db.GetRefreshTokenByHash(r.Context(), tokenHash)
 	if err != nil {
 		h.error(w, http.StatusUnauthorized, "invalid refresh token")
 		return
 	}
 
-	if time.Now().After(expiresAt) {
-		h.pool.Exec(r.Context(), `DELETE FROM refresh_tokens WHERE id = $1`, tokenID)
-		h.error(w, http.StatusUnauthorized, "refresh token expired")
-		return
-	}
-
 	// Delete old token (rotation)
-	h.pool.Exec(r.Context(), `DELETE FROM refresh_tokens WHERE id = $1`, tokenID)
+	_ = h.db.DeleteRefreshToken(r.Context(), rt.ID)
 
 	// Get user
-	var email, name string
-	var avatarURL *string
-	var createdAt time.Time
-	err = h.pool.QueryRow(r.Context(),
-		`SELECT email, name, avatar_url, created_at FROM users WHERE id = $1`,
-		userID,
-	).Scan(&email, &name, &avatarURL, &createdAt)
-	if err != nil {
+	user, err := h.db.GetUserByID(r.Context(), rt.UserID)
+	if errors.Is(err, pgx.ErrNoRows) {
 		h.error(w, http.StatusUnauthorized, "user not found")
 		return
 	}
+	if err != nil {
+		h.error(w, http.StatusInternalServerError, "internal error")
+		return
+	}
 
-	accessToken, refreshToken, err := h.generateTokens(r.Context(), userID)
+	accessToken, refreshToken, err := h.generateTokens(r.Context(), uuidToString(user.ID))
 	if err != nil {
 		h.error(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
 	h.json(w, http.StatusOK, authResponse{
-		User: userResponse{
-			ID:        userID,
-			Email:     email,
-			Name:      name,
-			AvatarURL: avatarURL,
-			CreatedAt: createdAt.Format(time.RFC3339),
-		},
+		User:         userToResponse(user),
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
 	})
@@ -227,10 +196,12 @@ func (h *Handler) generateTokens(ctx context.Context, userID string) (string, st
 	refreshToken := uuid.New().String()
 	tokenHash := hashToken(refreshToken)
 
-	_, err = h.pool.Exec(ctx,
-		`INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)`,
-		userID, tokenHash, time.Now().Add(h.config.RefreshTokenTTL),
-	)
+	uid := parseUUID(userID)
+	_, err = h.db.CreateRefreshToken(ctx, database.CreateRefreshTokenParams{
+		UserID:    uid,
+		TokenHash: tokenHash,
+		ExpiresAt: pgtype.Timestamptz{Time: time.Now().Add(h.config.RefreshTokenTTL), Valid: true},
+	})
 	if err != nil {
 		return "", "", err
 	}
@@ -241,4 +212,32 @@ func (h *Handler) generateTokens(ctx context.Context, userID string) (string, st
 func hashToken(token string) string {
 	h := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(h[:])
+}
+
+func uuidToString(id pgtype.UUID) string {
+	u, _ := uuid.FromBytes(id.Bytes[:])
+	return u.String()
+}
+
+func parseUUID(s string) pgtype.UUID {
+	u, err := uuid.Parse(s)
+	if err != nil {
+		return pgtype.UUID{}
+	}
+	return pgtype.UUID{Bytes: u, Valid: true}
+}
+
+func userToResponse(u database.User) userResponse {
+	resp := userResponse{
+		ID:    uuidToString(u.ID),
+		Email: u.Email,
+		Name:  u.Name,
+	}
+	if u.AvatarUrl.Valid {
+		resp.AvatarURL = &u.AvatarUrl.String
+	}
+	if u.CreatedAt.Valid {
+		resp.CreatedAt = u.CreatedAt.Time.Format(time.RFC3339)
+	}
+	return resp
 }

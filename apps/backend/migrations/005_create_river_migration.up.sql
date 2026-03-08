@@ -1,0 +1,8 @@
+-- River manages its own database schema via its built-in migrator.
+-- River's tables (river_job, river_leader, river_migration, etc.) are created
+-- automatically when RunRiverMigrations() is called at worker startup.
+--
+-- This migration file is a placeholder to document that River's schema exists
+-- alongside the application schema. No manual SQL is needed here.
+--
+-- See: internal/worker/migrate.go

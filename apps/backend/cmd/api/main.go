@@ -13,6 +13,7 @@ import (
 	"github.com/dittoo/backend/internal/config"
 	"github.com/dittoo/backend/internal/handler"
 	"github.com/dittoo/backend/internal/middleware"
+	"github.com/dittoo/backend/internal/storage"
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
@@ -66,8 +67,14 @@ func main() {
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 
+	// S3/R2 storage client
+	r2, err := storage.NewR2Client(cfg)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("failed to create R2 client")
+	}
+
 	// Auth routes (public)
-	h := handler.New(pool, cfg, logger)
+	h := handler.New(pool, cfg, logger, r2)
 	r.Route("/api/auth", func(r chi.Router) {
 		r.Post("/signup", h.Signup)
 		r.Post("/login", h.Login)

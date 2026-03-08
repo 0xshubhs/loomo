@@ -5,21 +5,27 @@ import (
 	"net/http"
 
 	"github.com/dittoo/backend/internal/config"
+	"github.com/dittoo/backend/internal/database"
+	"github.com/dittoo/backend/internal/storage"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog"
 )
 
 type Handler struct {
-	pool   *pgxpool.Pool
-	config *config.Config
-	logger zerolog.Logger
+	pool    *pgxpool.Pool
+	db      *database.Queries
+	storage *storage.R2Client
+	config  *config.Config
+	logger  zerolog.Logger
 }
 
-func New(pool *pgxpool.Pool, cfg *config.Config, logger zerolog.Logger) *Handler {
+func New(pool *pgxpool.Pool, cfg *config.Config, logger zerolog.Logger, store *storage.R2Client) *Handler {
 	return &Handler{
-		pool:   pool,
-		config: cfg,
-		logger: logger,
+		pool:    pool,
+		db:      database.New(pool),
+		storage: store,
+		config:  cfg,
+		logger:  logger,
 	}
 }
 
