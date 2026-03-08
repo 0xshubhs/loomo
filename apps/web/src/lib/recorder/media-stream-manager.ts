@@ -6,11 +6,16 @@ export class MediaStreamManager {
   async requestScreenCapture(systemAudio: boolean): Promise<MediaStream> {
     this.screenStream = await navigator.mediaDevices.getDisplayMedia({
       video: {
-        width: { ideal: 1920 },
-        height: { ideal: 1080 },
-        frameRate: { ideal: 30, max: 30 },
+        width: { ideal: 2560, max: 3840 },
+        height: { ideal: 1440, max: 2160 },
+        frameRate: { ideal: 30, max: 60 },
       },
-      audio: systemAudio,
+      audio: systemAudio ? {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+        sampleRate: 48000,
+      } : false,
     } as DisplayMediaStreamOptions);
     return this.screenStream;
   }
@@ -19,8 +24,9 @@ export class MediaStreamManager {
     this.cameraStream = await navigator.mediaDevices.getUserMedia({
       video: {
         deviceId: deviceId ? { exact: deviceId } : undefined,
-        width: { ideal: 640 },
-        height: { ideal: 640 },
+        width: { ideal: 720 },
+        height: { ideal: 720 },
+        frameRate: { ideal: 30 },
         facingMode: 'user',
       },
     });
@@ -34,6 +40,7 @@ export class MediaStreamManager {
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true,
+        sampleRate: 48000,
       },
     });
     return this.micStream;

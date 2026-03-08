@@ -32,7 +32,7 @@ export class RecordingSession {
         const micStream = await this.streamManager.requestMicrophone(selectedMicId);
         outputStream = this.mergeStreams([camStream], [micStream]);
       } else {
-        // Screen capture
+        // Screen capture — request high quality
         const screenStream = await this.streamManager.requestScreenCapture(systemAudioEnabled);
 
         // Listen for user stopping screen share
@@ -50,7 +50,7 @@ export class RecordingSession {
           const camStream = await this.streamManager.requestCamera(selectedCameraId);
           this.store.cameraStream = camStream;
 
-          // Canvas compositor
+          // Canvas compositor for screen + camera overlay
           this.compositor = new CanvasCompositor(width, height);
           this.compositor.setScreenSource(screenStream);
           this.compositor.setCameraSource(camStream);
@@ -63,7 +63,7 @@ export class RecordingSession {
           }
           outputStream = this.mergeStreams([composited], audioStreams);
         } else {
-          // Screen only
+          // Screen only — pass the original stream directly for maximum quality
           const audioStreams = [micStream];
           if (screenStream.getAudioTracks().length > 0) {
             audioStreams.push(screenStream);
@@ -72,11 +72,12 @@ export class RecordingSession {
         }
       }
 
-      // Create MediaRecorder
+      // Create MediaRecorder with best available codec
       const mimeType = this.getSupportedMimeType();
+      const bitrate = this.getBitrate(quality, mode === 'screen-cam');
       this.mediaRecorder = new MediaRecorder(outputStream, {
         mimeType,
-        videoBitsPerSecond: this.getBitrate(quality),
+        videoBitsPerSecond: bitrate,
       });
 
       this.chunks = [];
@@ -84,7 +85,8 @@ export class RecordingSession {
         if (e.data.size > 0) this.chunks.push(e.data);
       };
 
-      this.mediaRecorder.start(1000); // 1-second timeslice
+      // Use larger timeslice for better quality (less overhead from frequent chunk boundaries)
+      this.mediaRecorder.start(5000);
       this.store.startRecording();
       this.startTimer();
     } catch (err) {
@@ -202,7 +204,7 @@ export class RecordingSession {
       }
     }
 
-    // Audio: merge all audio sources
+    // Audio: merge all audio sources via AudioContext
     if (audioStreams.length === 1) {
       const at = audioStreams[0].getAudioTracks();
       if (at.length > 0) tracks.push(at[0]);
@@ -229,7 +231,11 @@ export class RecordingSession {
   }
 
   private getSupportedMimeType(): string {
+    // Prefer H.264 for better real-time quality + wider compatibility
+    // Then VP9, then VP8 as fallbacks
     const types = [
+      'video/webm;codecs=h264,opus',
+      'video/mp4;codecs=h264,aac',
       'video/webm;codecs=vp9,opus',
       'video/webm;codecs=vp8,opus',
       'video/webm',
@@ -240,13 +246,19 @@ export class RecordingSession {
     return 'video/webm';
   }
 
-  private getBitrate(quality: string): number {
-    switch (quality) {
-      case '1080p': return 5_000_000;
-      case '720p': return 2_500_000;
-      case '480p': return 1_000_000;
-      default: return 2_500_000;
-    }
+  private getBitrate(quality: string, isComposited: boolean): number {
+    // Higher bitrates for crisp screen recording
+    // Screen content (text, UI) needs more bitrate than webcam
+    const base = (() => {
+      switch (quality) {
+        case '1080p': return 12_000_000; // 12 Mbps
+        case '720p': return 6_000_000;   // 6 Mbps
+        case '480p': return 3_000_000;   // 3 Mbps
+        default: return 8_000_000;
+      }
+    })();
+    // Composited needs extra bitrate due to canvas re-encoding
+    return isComposited ? Math.floor(base * 1.2) : base;
   }
 
   private async generateThumbnail(blob: Blob): Promise<string> {
@@ -263,12 +275,12 @@ export class RecordingSession {
 
       video.onseeked = () => {
         const canvas = document.createElement('canvas');
-        canvas.width = 320;
-        canvas.height = 180;
+        canvas.width = 640;
+        canvas.height = 360;
         const ctx = canvas.getContext('2d')!;
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         URL.revokeObjectURL(url);
-        resolve(canvas.toDataURL('image/jpeg', 0.7));
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
       };
 
       // Timeout fallback
