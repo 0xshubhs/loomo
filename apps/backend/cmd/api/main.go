@@ -7,10 +7,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 
 	"github.com/dittoo/backend/internal/config"
+	"github.com/dittoo/backend/internal/database"
 	"github.com/dittoo/backend/internal/handler"
 	"github.com/dittoo/backend/internal/middleware"
 	"github.com/dittoo/backend/internal/storage"
@@ -44,22 +47,33 @@ func main() {
 	}
 	logger.Info().Msg("connected to database")
 
+	// Run database migrations
+	_, thisFile, _, _ := runtime.Caller(0)
+	migrationsPath := filepath.Join(filepath.Dir(thisFile), "..", "..", "migrations")
+	if envPath := os.Getenv("MIGRATIONS_PATH"); envPath != "" {
+		migrationsPath = envPath
+	}
+	if err := database.RunMigrations(cfg.DatabaseURL, migrationsPath, logger); err != nil {
+		logger.Fatal().Err(err).Msg("failed to run database migrations")
+	}
+
 	// Router
 	r := chi.NewRouter()
 
-	// Global middleware
-	r.Use(chimw.RequestID)
-	r.Use(chimw.RealIP)
-	r.Use(chimw.Recoverer)
-	r.Use(middleware.Logger(logger))
+	// Global middleware — CORS must be first so preflight requests are handled
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   cfg.AllowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
-		ExposedHeaders:   []string{"Link"},
+		AllowedHeaders:   []string{"Authorization", "Content-Type", "Accept"},
+		ExposedHeaders:   []string{"X-Request-ID"},
 		AllowCredentials: true,
 		MaxAge:           300,
 	}))
+	r.Use(middleware.RequestID)
+	r.Use(chimw.RealIP)
+	r.Use(chimw.Recoverer)
+	r.Use(middleware.Logger(logger))
+	r.Use(middleware.RateLimit(120))
 
 	// Health check
 	r.Get("/api/health", func(w http.ResponseWriter, r *http.Request) {

@@ -4,11 +4,18 @@
 	import FloatingControls from './FloatingControls.svelte';
 	import CountdownOverlay from './CountdownOverlay.svelte';
 	import PostRecordPanel from './PostRecordPanel.svelte';
+	import CameraBubble from './CameraBubble.svelte';
 	import { RecordingSession } from '$lib/recorder/recording-session.js';
 	import { onMount } from 'svelte';
 
 	const recorder = getRecorder();
 	let session: RecordingSession | null = null;
+
+	let showCameraBubble = $derived(
+		recorder.mode === 'screen-cam' &&
+		(recorder.recordingState === 'recording' || recorder.recordingState === 'paused') &&
+		recorder.cameraStream !== null
+	);
 
 	onMount(() => {
 		recorder.enumerateDevices();
@@ -51,6 +58,10 @@
 		URL.revokeObjectURL(url);
 	}
 </script>
+
+{#if showCameraBubble}
+	<CameraBubble stream={recorder.cameraStream} />
+{/if}
 
 <div class="record-layout">
 	{#if recorder.recordingState === 'idle' || recorder.recordingState === 'requesting-permissions'}

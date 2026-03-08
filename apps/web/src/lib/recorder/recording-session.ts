@@ -28,6 +28,7 @@ export class RecordingSession {
 
       if (mode === 'camera-only') {
         const camStream = await this.streamManager.requestCamera(selectedCameraId);
+        this.store.cameraStream = camStream;
         const micStream = await this.streamManager.requestMicrophone(selectedMicId);
         outputStream = this.mergeStreams([camStream], [micStream]);
       } else {
@@ -47,6 +48,7 @@ export class RecordingSession {
         if (mode === 'screen-cam') {
           // Camera
           const camStream = await this.streamManager.requestCamera(selectedCameraId);
+          this.store.cameraStream = camStream;
 
           // Canvas compositor
           this.compositor = new CanvasCompositor(width, height);
@@ -118,6 +120,7 @@ export class RecordingSession {
       this.mediaRecorder.onstop = async () => {
         this.stopTimer();
         this.compositor?.stop();
+        this.store.cleanupCameraStream();
         this.streamManager.stopAllStreams();
 
         const blob = new Blob(this.chunks, { type: this.mediaRecorder!.mimeType });
@@ -146,6 +149,7 @@ export class RecordingSession {
     this.stopTimer();
     this.mediaRecorder?.stop();
     this.compositor?.stop();
+    this.store.cleanupCameraStream();
     this.streamManager.stopAllStreams();
     this.store.reset();
   }

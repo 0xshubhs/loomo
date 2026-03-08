@@ -14,6 +14,7 @@ export class RecorderStore {
   cameraBubblePosition = $state<CameraBubblePosition>({ x: 85, y: 85 });
   cameraBubbleSize = $state<'sm' | 'md' | 'lg'>('md');
   cameraBubbleVisible = $state<boolean>(true);
+  cameraStream = $state<MediaStream | null>(null);
   result = $state<RecordingResult | null>(null);
   error = $state<string | null>(null);
 
@@ -48,7 +49,10 @@ export class RecorderStore {
   pauseRecording() { this.recordingState = 'paused'; }
   resumeRecording() { this.recordingState = 'recording'; }
 
-  stopRecording() { this.recordingState = 'processing'; }
+  stopRecording() {
+    this.recordingState = 'processing';
+    this.cleanupCameraStream();
+  }
 
   setResult(result: RecordingResult) {
     this.result = result;
@@ -61,11 +65,19 @@ export class RecorderStore {
   }
 
   reset() {
+    this.cleanupCameraStream();
     this.recordingState = 'idle';
     this.elapsedSeconds = 0;
     this.countdownValue = 0;
     this.result = null;
     this.error = null;
+  }
+
+  cleanupCameraStream() {
+    if (this.cameraStream) {
+      this.cameraStream.getTracks().forEach(t => t.stop());
+      this.cameraStream = null;
+    }
   }
 
   async enumerateDevices() {
