@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>DITTOO Icon Generator</title>
+  <style>
+    body {
+      font-family: -apple-system, sans-serif;
+      background: #111;
+      color: #fff;
+      padding: 40px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 32px;
+    }
+    h1 { margin-bottom: 8px; }
+    p { color: #888; margin-bottom: 24px; }
+    .icons {
+      display: flex;
+      gap: 32px;
+      align-items: end;
+    }
+    .icon-group {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+    }
+    canvas {
+      border: 1px solid #333;
+      border-radius: 8px;
+    }
+    label { font-size: 13px; color: #888; }
+    a {
+      display: inline-block;
+      padding: 8px 16px;
+      background: #ff3333;
+      color: white;
+      border-radius: 6px;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    a:hover { background: #ff5555; }
+    .download-links {
+      display: flex;
+      gap: 12px;
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+  <h1>DITTOO Extension Icon Generator</h1>
+  <p>Click the download links below to save each icon as PNG.</p>
+
+  <div class="icons">
+    <div class="icon-group">
+      <canvas id="icon16" width="16" height="16"></canvas>
+      <label>16x16</label>
+      <a id="dl16" download="icon16.png">Download</a>
+    </div>
+    <div class="icon-group">
+      <canvas id="icon48" width="48" height="48"></canvas>
+      <label>48x48</label>
+      <a id="dl48" download="icon48.png">Download</a>
+    </div>
+    <div class="icon-group">
+      <canvas id="icon128" width="128" height="128"></canvas>
+      <label>128x128</label>
+      <a id="dl128" download="icon128.png">Download</a>
+    </div>
+  </div>
+
+  <div class="download-links">
+    <a id="dlAll" href="#">Download All</a>
+  </div>
+
+  <script>
+    function drawIcon(canvas) {
+      const size = canvas.width;
+      const ctx = canvas.getContext('2d');
+
+      // Background: rounded rectangle (red)
+      const radius = size * 0.2;
+      ctx.beginPath();
+      ctx.roundRect(0, 0, size, size, radius);
+      ctx.fillStyle = '#ff3333';
+      ctx.fill();
+
+      // Inner circle (white "record" dot)
+      ctx.beginPath();
+      ctx.arc(size / 2, size / 2, size * 0.28, 0, Math.PI * 2);
+      ctx.fillStyle = 'white';
+      ctx.fill();
+
+      // Small play triangle inside circle (optional brand mark)
+      if (size >= 48) {
+        const cx = size / 2;
+        const cy = size / 2;
+        const triSize = size * 0.12;
+        ctx.beginPath();
+        ctx.moveTo(cx - triSize * 0.4, cy - triSize);
+        ctx.lineTo(cx + triSize * 0.8, cy);
+        ctx.lineTo(cx - triSize * 0.4, cy + triSize);
+        ctx.closePath();
+        ctx.fillStyle = '#ff3333';
+        ctx.fill();
+      }
+    }
+
+    // Draw all sizes
+    const sizes = [16, 48, 128];
+    sizes.forEach((size) => {
+      const canvas = document.getElementById(`icon${size}`);
+      drawIcon(canvas);
+
+      // Set download link
+      const link = document.getElementById(`dl${size}`);
+      link.href = canvas.toDataURL('image/png');
+    });
+
+    // Download all
+    document.getElementById('dlAll').addEventListener('click', (e) => {
+      e.preventDefault();
+      sizes.forEach((size) => {
+        const link = document.getElementById(`dl${size}`);
+        link.click();
+      });
+    });
+  </script>
+</body>
+</html>

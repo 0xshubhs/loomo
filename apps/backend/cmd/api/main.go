@@ -95,8 +95,15 @@ func main() {
 		r.Post("/refresh", h.RefreshToken)
 	})
 
-	// Share route (public)
-	r.Get("/api/share/{id}", h.GetShareVideo)
+	// Share routes (public)
+	r.Route("/api/share/{id}", func(r chi.Router) {
+		r.Get("/", h.GetShareVideo)
+		r.Post("/view", h.RecordView)
+		r.Get("/reactions", h.GetReactions)
+		r.Post("/reactions", h.AddReaction)
+		r.Get("/comments", h.GetComments)
+		r.Post("/comments", h.CreateComment)
+	})
 
 	// Authenticated routes
 	r.Route("/api", func(r chi.Router) {

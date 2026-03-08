@@ -328,15 +328,57 @@ func (h *Handler) GetShareVideo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Generate a presigned GET URL for the raw source video so the share page
+	// can play it immediately while HLS transcoding is still in progress.
+	var sourceURL string
+	if sv.SourceKey.Valid && sv.SourceKey.String != "" {
+		u, err := h.storage.GeneratePresignedGetURL(sv.SourceKey.String, 2*time.Hour)
+		if err != nil {
+			h.logger.Warn().Err(err).Msg("failed to generate presigned source URL")
+		} else {
+			sourceURL = u
+		}
+	}
+
+	// Fetch reaction counts
+	reactionCounts, err := h.db.GetReactionCounts(r.Context(), vid)
+	if err != nil {
+		h.logger.Warn().Err(err).Msg("failed to get reaction counts")
+		reactionCounts = nil
+	}
+	reactions := make([]map[string]interface{}, 0, len(reactionCounts))
+	for _, rc := range reactionCounts {
+		reactions = append(reactions, map[string]interface{}{
+			"emoji": rc.Emoji,
+			"count": rc.Count,
+		})
+	}
+
+	// Fetch comments
+	dbComments, err := h.db.GetCommentsByVideo(r.Context(), vid)
+	if err != nil {
+		h.logger.Warn().Err(err).Msg("failed to get comments")
+		dbComments = nil
+	}
+	comments := make([]map[string]interface{}, 0, len(dbComments))
+	for _, c := range dbComments {
+		comments = append(comments, commentToResponse(c))
+	}
+
 	h.json(w, http.StatusOK, map[string]interface{}{
 		"id":            uuidToString(sv.ID),
 		"title":         sv.Title,
 		"description":   pgTextToPtr(sv.Description),
+		"status":        string(sv.Status),
 		"duration_ms":   pgInt4ToPtr(sv.DurationMs),
+		"source_url":    sourceURL,
 		"hls_url":       buildCDNURLValue(h.config.CDNURL, sv.HlsKey),
 		"thumbnail_url": buildCDNURLValue(h.config.CDNURL, sv.ThumbnailKey),
 		"gif_url":       buildCDNURLValue(h.config.CDNURL, sv.GifKey),
 		"share_mode":    string(sv.ShareMode),
+		"view_count":    sv.ViewCount,
+		"reactions":     reactions,
+		"comments":      comments,
 		"created_at":    sv.CreatedAt.Time.Format(time.RFC3339),
 		"creator": map[string]interface{}{
 			"name":       sv.AuthorName,

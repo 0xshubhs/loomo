@@ -2,6 +2,7 @@
 	import { copyToClipboard } from '$lib/utils/clipboard.js';
 	import { relativeTime } from '$lib/utils/time.js';
 	import Icon from '$lib/components/shared/Icon.svelte';
+	import ViewCounter from './ViewCounter.svelte';
 
 	interface Props {
 		title: string;
@@ -9,9 +10,10 @@
 		authorAvatar: string | null;
 		createdAt: string;
 		viewCount: number;
+		videoId: string;
 	}
 
-	let { title, authorName, authorAvatar, createdAt, viewCount }: Props = $props();
+	let { title, authorName, authorAvatar, createdAt, viewCount, videoId }: Props = $props();
 
 	let copied = $state(false);
 
@@ -25,10 +27,20 @@
 
 	let timeAgo = $derived(relativeTime(createdAt));
 
-	function formatViewCount(count: number): string {
-		if (count < 1000) return `${count} views`;
-		if (count < 1_000_000) return `${(count / 1000).toFixed(1)}K views`;
-		return `${(count / 1_000_000).toFixed(1)}M views`;
+	function getAuthorInitial(name: string): string {
+		return name.charAt(0).toUpperCase();
+	}
+
+	function getAuthorColor(name: string): string {
+		const colors = [
+			'#6366f1', '#8b5cf6', '#a855f7', '#d946ef',
+			'#ec4899', '#f43f5e', '#ef4444', '#f97316',
+		];
+		let hash = 0;
+		for (let i = 0; i < name.length; i++) {
+			hash = name.charCodeAt(i) + ((hash << 5) - hash);
+		}
+		return colors[Math.abs(hash) % colors.length];
 	}
 </script>
 
@@ -37,22 +49,21 @@
 
 	<div class="meta-row">
 		<div class="author">
-			<div class="avatar">
+			<div class="avatar" style="background-color: {getAuthorColor(authorName)}">
 				{#if authorAvatar}
 					<img src={authorAvatar} alt={authorName} class="avatar-img" />
 				{:else}
-					<div class="avatar-fallback">
-						<Icon name="user" size={16} />
-					</div>
+					<span class="avatar-initial">{getAuthorInitial(authorName)}</span>
 				{/if}
 			</div>
-			<span class="author-name">{authorName}</span>
+			<div class="author-info">
+				<span class="author-name">{authorName}</span>
+				<span class="author-time">{timeAgo}</span>
+			</div>
 		</div>
 
 		<div class="meta-right">
-			<span class="meta-text">{formatViewCount(viewCount)}</span>
-			<span class="meta-sep">&middot;</span>
-			<span class="meta-text">{timeAgo}</span>
+			<ViewCounter {videoId} initialCount={viewCount} />
 
 			<button class="share-btn" onclick={handleShare}>
 				<Icon name={copied ? 'check' : 'link'} size={14} />
@@ -67,11 +78,12 @@
 		padding: 16px 0;
 	}
 	.video-title {
-		font-size: 20px;
+		font-size: 22px;
 		font-weight: 600;
 		line-height: 1.3;
-		margin-bottom: 12px;
+		margin-bottom: 14px;
 		color: var(--text-primary);
+		letter-spacing: -0.01em;
 	}
 	.meta-row {
 		display: flex;
@@ -86,58 +98,63 @@
 		gap: 10px;
 	}
 	.avatar {
-		width: 32px;
-		height: 32px;
+		width: 36px;
+		height: 36px;
 		border-radius: 50%;
 		overflow: hidden;
 		flex-shrink: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
 	}
 	.avatar-img {
 		width: 100%;
 		height: 100%;
 		object-fit: cover;
 	}
-	.avatar-fallback {
-		width: 100%;
-		height: 100%;
-		background: var(--bg-surface);
+	.avatar-initial {
+		font-size: 14px;
+		font-weight: 600;
+		color: white;
+		line-height: 1;
+	}
+	.author-info {
 		display: flex;
-		align-items: center;
-		justify-content: center;
-		color: var(--text-muted);
+		flex-direction: column;
+		gap: 1px;
 	}
 	.author-name {
 		font-size: 14px;
 		font-weight: 500;
 		color: var(--text-primary);
+		line-height: 1.2;
+	}
+	.author-time {
+		font-size: 12px;
+		color: var(--text-muted, rgba(255, 255, 255, 0.35));
+		line-height: 1.2;
 	}
 	.meta-right {
 		display: flex;
 		align-items: center;
-		gap: 8px;
-	}
-	.meta-text {
-		font-size: 13px;
-		color: var(--text-secondary);
-	}
-	.meta-sep {
-		color: var(--text-muted);
+		gap: 12px;
 	}
 	.share-btn {
 		display: inline-flex;
 		align-items: center;
 		gap: 6px;
-		padding: 6px 14px;
-		background: var(--bg-surface);
-		border: 1px solid var(--border-primary);
+		padding: 7px 16px;
+		background: rgba(255, 255, 255, 0.06);
+		border: 1px solid rgba(255, 255, 255, 0.1);
 		border-radius: 999px;
 		color: var(--text-primary);
 		font-size: 13px;
 		font-weight: 500;
 		cursor: pointer;
-		transition: var(--transition-fast);
+		transition: all 0.15s ease;
 	}
 	.share-btn:hover {
-		background: var(--bg-hover);
+		background: rgba(255, 255, 255, 0.1);
+		border-color: rgba(255, 255, 255, 0.15);
 	}
 </style>

@@ -178,7 +178,7 @@
 		{:else if uploadState === 'processing'}
 			<div class="upload-status">
 				<div class="spinner"></div>
-				<p class="status-text">Processing video...</p>
+				<p class="status-text">Finishing up...</p>
 			</div>
 
 		{:else if uploadState === 'done' && shareUrl}
@@ -188,7 +188,8 @@
 						<polyline points="20 6 9 17 4 12"/>
 					</svg>
 				</div>
-				<p class="done-heading">Your video is ready!</p>
+				<p class="done-heading">Your video is live!</p>
+				<p class="done-subtext">HD version will be ready shortly</p>
 
 				<div class="share-url-row">
 					<input
@@ -475,7 +476,13 @@
 		font-size: 18px;
 		font-weight: 600;
 		color: var(--text-primary);
-		margin-bottom: 20px;
+		margin-bottom: 4px;
+	}
+
+	.done-subtext {
+		font-size: 13px;
+		color: var(--text-tertiary);
+		margin-bottom: 16px;
 	}
 
 	.share-url-row {

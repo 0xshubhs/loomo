@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "make dev",
     "build": "make build",
-    "check": "cd apps/web && bun run check"
+    "check": "cd apps/web && bun run check",
+    "ext:open": "echo 'Load apps/extension/ as unpacked extension in chrome://extensions'"
   }
 }

@@ -1,12 +1,11 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
-
 	interface Props {
 		src: string;
+		fallbackSrc?: string;
 		poster?: string;
 	}
 
-	let { src, poster }: Props = $props();
+	let { src, fallbackSrc, poster }: Props = $props();
 
 	let videoEl: HTMLVideoElement | undefined = $state();
 	let containerEl: HTMLDivElement | undefined = $state();
@@ -21,16 +20,37 @@
 	let showControls = $state(true);
 	let controlsTimer: ReturnType<typeof setTimeout> | null = null;
 
+	// Determine which source mode we're using:
+	// - 'hls' when an HLS URL is available
+	// - 'fallback' when only the raw source video is available
+	// - 'none' when neither is available
+	let sourceMode = $derived<'hls' | 'fallback' | 'none'>(
+		src ? 'hls' : fallbackSrc ? 'fallback' : 'none'
+	);
+
 	$effect(() => {
 		if (!videoEl) return;
 		const currentSrc = src;
-		loadSource(currentSrc);
+		const currentFallback = fallbackSrc;
+
+		if (currentSrc) {
+			loadHlsSource(currentSrc);
+		} else if (currentFallback) {
+			loadDirectSource(currentFallback);
+		}
+
 		return () => {
 			destroyHls();
 		};
 	});
 
-	async function loadSource(url: string) {
+	function loadDirectSource(url: string) {
+		destroyHls();
+		if (!videoEl) return;
+		videoEl.src = url;
+	}
+
+	async function loadHlsSource(url: string) {
 		destroyHls();
 		if (!videoEl) return;
 
@@ -159,7 +179,21 @@
 		class="video-element"
 	></video>
 
-	{#if !playing && currentTime === 0}
+	{#if sourceMode === 'fallback'}
+		<div class="processing-badge">
+			<div class="processing-dot"></div>
+			HD processing...
+		</div>
+	{/if}
+
+	{#if sourceMode === 'none'}
+		<div class="no-source-overlay">
+			<div class="spinner"></div>
+			<p>Video is being processed...</p>
+		</div>
+	{/if}
+
+	{#if !playing && currentTime === 0 && sourceMode !== 'none'}
 		<button class="big-play-btn" onclick={togglePlay} aria-label="Play video">
 			<svg width="48" height="48" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg>
 		</button>
@@ -259,6 +293,61 @@
 	.big-play-btn:hover {
 		background: rgba(0, 0, 0, 0.8);
 		border-color: rgba(255, 255, 255, 0.5);
+	}
+	.processing-badge {
+		position: absolute;
+		top: 12px;
+		right: 12px;
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 6px 12px;
+		background: rgba(0, 0, 0, 0.7);
+		backdrop-filter: blur(8px);
+		border: 1px solid rgba(255, 255, 255, 0.1);
+		border-radius: 20px;
+		color: rgba(255, 255, 255, 0.85);
+		font-size: 12px;
+		font-weight: 500;
+		pointer-events: none;
+		z-index: 5;
+	}
+	.processing-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: #f59e0b;
+		animation: pulse-dot 1.5s ease-in-out infinite;
+	}
+	@keyframes pulse-dot {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.4; }
+	}
+	.no-source-overlay {
+		position: absolute;
+		inset: 0;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 12px;
+		background: rgba(0, 0, 0, 0.6);
+		z-index: 5;
+	}
+	.no-source-overlay p {
+		color: rgba(255, 255, 255, 0.7);
+		font-size: 14px;
+	}
+	.spinner {
+		width: 32px;
+		height: 32px;
+		border: 3px solid rgba(255, 255, 255, 0.1);
+		border-top-color: #ff3333;
+		border-radius: 50%;
+		animation: spin 0.8s linear infinite;
+	}
+	@keyframes spin {
+		to { transform: rotate(360deg); }
 	}
 	.controls {
 		position: absolute;

@@ -39,9 +39,9 @@ UPDATE videos SET deleted_at = NOW() WHERE id = $1;
 
 -- name: GetShareVideo :one
 SELECT v.id, v.title, v.description, v.status, v.duration_ms,
-       v.hls_key, v.thumbnail_key, v.gif_key, v.share_mode,
+       v.source_key, v.hls_key, v.thumbnail_key, v.gif_key, v.share_mode,
        u.name AS author_name, u.avatar_url AS author_avatar,
-       v.created_at
+       v.created_at, COALESCE(v.view_count, 0)::integer AS view_count
 FROM videos v
 JOIN users u ON v.user_id = u.id
 WHERE v.id = $1 AND v.deleted_at IS NULL AND v.share_mode != 'private';

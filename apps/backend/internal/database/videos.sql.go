@@ -26,7 +26,7 @@ func (q *Queries) CountVideosByUser(ctx context.Context, userID pgtype.UUID) (in
 const createVideo = `-- name: CreateVideo :one
 INSERT INTO videos (user_id, title, recording_source)
 VALUES ($1, $2, $3)
-RETURNING id, user_id, title, description, status, duration_ms, recording_source, source_key, hls_key, thumbnail_key, gif_key, share_mode, upload_id, upload_parts, created_at, updated_at, deleted_at
+RETURNING id, user_id, title, description, status, duration_ms, recording_source, source_key, hls_key, thumbnail_key, gif_key, share_mode, upload_id, upload_parts, created_at, updated_at, deleted_at, view_count
 `
 
 type CreateVideoParams struct {
@@ -56,15 +56,16 @@ func (q *Queries) CreateVideo(ctx context.Context, arg CreateVideoParams) (Video
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.ViewCount,
 	)
 	return i, err
 }
 
 const getShareVideo = `-- name: GetShareVideo :one
 SELECT v.id, v.title, v.description, v.status, v.duration_ms,
-       v.hls_key, v.thumbnail_key, v.gif_key, v.share_mode,
+       v.source_key, v.hls_key, v.thumbnail_key, v.gif_key, v.share_mode,
        u.name AS author_name, u.avatar_url AS author_avatar,
-       v.created_at
+       v.created_at, COALESCE(v.view_count, 0)::integer AS view_count
 FROM videos v
 JOIN users u ON v.user_id = u.id
 WHERE v.id = $1 AND v.deleted_at IS NULL AND v.share_mode != 'private'
@@ -76,6 +77,7 @@ type GetShareVideoRow struct {
 	Description  pgtype.Text        `json:"description"`
 	Status       VideoStatus        `json:"status"`
 	DurationMs   pgtype.Int4        `json:"duration_ms"`
+	SourceKey    pgtype.Text        `json:"source_key"`
 	HlsKey       pgtype.Text        `json:"hls_key"`
 	ThumbnailKey pgtype.Text        `json:"thumbnail_key"`
 	GifKey       pgtype.Text        `json:"gif_key"`
@@ -83,6 +85,7 @@ type GetShareVideoRow struct {
 	AuthorName   string             `json:"author_name"`
 	AuthorAvatar pgtype.Text        `json:"author_avatar"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	ViewCount    int32              `json:"view_count"`
 }
 
 func (q *Queries) GetShareVideo(ctx context.Context, id pgtype.UUID) (GetShareVideoRow, error) {
@@ -94,6 +97,7 @@ func (q *Queries) GetShareVideo(ctx context.Context, id pgtype.UUID) (GetShareVi
 		&i.Description,
 		&i.Status,
 		&i.DurationMs,
+		&i.SourceKey,
 		&i.HlsKey,
 		&i.ThumbnailKey,
 		&i.GifKey,
@@ -101,12 +105,13 @@ func (q *Queries) GetShareVideo(ctx context.Context, id pgtype.UUID) (GetShareVi
 		&i.AuthorName,
 		&i.AuthorAvatar,
 		&i.CreatedAt,
+		&i.ViewCount,
 	)
 	return i, err
 }
 
 const getVideoByID = `-- name: GetVideoByID :one
-SELECT id, user_id, title, description, status, duration_ms, recording_source, source_key, hls_key, thumbnail_key, gif_key, share_mode, upload_id, upload_parts, created_at, updated_at, deleted_at FROM videos WHERE id = $1 AND deleted_at IS NULL
+SELECT id, user_id, title, description, status, duration_ms, recording_source, source_key, hls_key, thumbnail_key, gif_key, share_mode, upload_id, upload_parts, created_at, updated_at, deleted_at, view_count FROM videos WHERE id = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) GetVideoByID(ctx context.Context, id pgtype.UUID) (Video, error) {
@@ -130,12 +135,13 @@ func (q *Queries) GetVideoByID(ctx context.Context, id pgtype.UUID) (Video, erro
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.ViewCount,
 	)
 	return i, err
 }
 
 const listVideosByUser = `-- name: ListVideosByUser :many
-SELECT id, user_id, title, description, status, duration_ms, recording_source, source_key, hls_key, thumbnail_key, gif_key, share_mode, upload_id, upload_parts, created_at, updated_at, deleted_at FROM videos
+SELECT id, user_id, title, description, status, duration_ms, recording_source, source_key, hls_key, thumbnail_key, gif_key, share_mode, upload_id, upload_parts, created_at, updated_at, deleted_at, view_count FROM videos
 WHERE user_id = $1 AND deleted_at IS NULL
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3
@@ -174,6 +180,7 @@ func (q *Queries) ListVideosByUser(ctx context.Context, arg ListVideosByUserPara
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeletedAt,
+			&i.ViewCount,
 		); err != nil {
 			return nil, err
 		}

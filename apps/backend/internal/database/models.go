@@ -235,4 +235,35 @@ type Video struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 	DeletedAt       pgtype.Timestamptz `json:"deleted_at"`
+	ViewCount       pgtype.Int4        `json:"view_count"`
+}
+
+type VideoView struct {
+	ID           pgtype.UUID        `json:"id"`
+	VideoID      pgtype.UUID        `json:"video_id"`
+	ViewerIp     pgtype.Text        `json:"viewer_ip"`
+	ViewerUserID pgtype.UUID        `json:"viewer_user_id"`
+	WatchedSeconds pgtype.Int4      `json:"watched_seconds"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
+type VideoReaction struct {
+	ID            pgtype.UUID        `json:"id"`
+	VideoID       pgtype.UUID        `json:"video_id"`
+	Emoji         string             `json:"emoji"`
+	ReactorName   pgtype.Text        `json:"reactor_name"`
+	ReactorUserID pgtype.UUID        `json:"reactor_user_id"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
+type VideoComment struct {
+	ID               pgtype.UUID        `json:"id"`
+	VideoID          pgtype.UUID        `json:"video_id"`
+	UserID           pgtype.UUID        `json:"user_id"`
+	AuthorName       string             `json:"author_name"`
+	AuthorAvatar     pgtype.Text        `json:"author_avatar"`
+	Body             string             `json:"body"`
+	TimestampSeconds pgtype.Int4        `json:"timestamp_seconds"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 }
