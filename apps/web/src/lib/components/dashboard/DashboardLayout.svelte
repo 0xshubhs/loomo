@@ -5,6 +5,11 @@
 	import Icon from '$lib/components/shared/Icon.svelte';
 	import { goto } from '$app/navigation';
 
+	let { ondelete, onrename }: {
+		ondelete?: (id: string) => void;
+		onrename?: (id: string, title: string) => void;
+	} = $props();
+
 	const dashboard = getDashboard();
 	const auth = getAuth();
 
@@ -40,7 +45,7 @@
 
 	function confirmRename() {
 		if (renamingId && renameValue.trim()) {
-			dashboard.updateVideo(renamingId, { title: renameValue.trim() });
+			onrename?.(renamingId, renameValue.trim());
 		}
 		renamingId = null;
 		renameValue = '';
@@ -72,7 +77,7 @@
 
 	function confirmDelete() {
 		if (deleteConfirmId) {
-			dashboard.removeVideo(deleteConfirmId);
+			ondelete?.(deleteConfirmId);
 		}
 		deleteConfirmId = null;
 	}
@@ -160,7 +165,12 @@
 	</header>
 
 	<main class="content">
-		{#if dashboard.filteredVideos.length === 0 && !dashboard.searchQuery}
+		{#if dashboard.loading}
+			<div class="empty-state">
+				<div class="spinner-small" style="width:32px;height:32px;margin:0 auto 16px"></div>
+				<p>Loading your recordings...</p>
+			</div>
+		{:else if dashboard.filteredVideos.length === 0 && !dashboard.searchQuery}
 			<div class="empty-state">
 				<div class="empty-icon">
 					<Icon name="camera" size={48} />
