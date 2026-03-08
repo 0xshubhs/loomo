@@ -6,8 +6,8 @@ export class MediaStreamManager {
   async requestScreenCapture(systemAudio: boolean): Promise<MediaStream> {
     this.screenStream = await navigator.mediaDevices.getDisplayMedia({
       video: {
-        width: { ideal: 2560, max: 3840 },
-        height: { ideal: 1440, max: 2160 },
+        width: { ideal: 3840 },
+        height: { ideal: 2160 },
         frameRate: { ideal: 30, max: 60 },
       },
       audio: systemAudio ? {

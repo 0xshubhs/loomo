@@ -57,16 +57,6 @@
 		recorder.reset();
 		session = null;
 	}
-
-	function handleDownload() {
-		if (!recorder.result) return;
-		const url = URL.createObjectURL(recorder.result.blob);
-		const a = document.createElement('a');
-		a.href = url;
-		a.download = 'recording.webm';
-		a.click();
-		URL.revokeObjectURL(url);
-	}
 </script>
 
 {#if showCameraBubble}
@@ -104,7 +94,6 @@
 			<PostRecordPanel
 				result={recorder.result!}
 				onrerecord={handleReRecord}
-				ondownload={handleDownload}
 			/>
 		</div>
 	{:else if currentView === 'error'}

@@ -6,15 +6,14 @@
 	import { uploadToPresignedUrl } from '$lib/api/upload.js';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
+	import { FFmpegBridge } from '$lib/engine/ffmpeg-bridge.svelte.js';
 
 	let {
 		result,
 		onrerecord,
-		ondownload,
 	}: {
 		result: RecordingResult;
 		onrerecord: () => void;
-		ondownload: () => void;
 	} = $props();
 
 	const auth = getAuth();
@@ -73,6 +72,80 @@
 		uploadError = null;
 	}
 
+	// Download format conversion
+	let showFormatPicker = $state(false);
+	let converting = $state(false);
+	let convertProgress = $state(0);
+	let convertFormat = $state('');
+	let ffmpegInstance: FFmpegBridge | null = null;
+
+	function downloadBlob(blob: Blob, filename: string) {
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement('a');
+		a.href = url;
+		a.download = filename;
+		a.click();
+		URL.revokeObjectURL(url);
+	}
+
+	function handleDownloadWebm() {
+		showFormatPicker = false;
+		downloadBlob(result.blob, 'recording.webm');
+	}
+
+	async function handleDownloadFormat(format: 'mp4' | 'mov') {
+		showFormatPicker = false;
+		converting = true;
+		convertFormat = format.toUpperCase();
+		convertProgress = 0;
+
+		try {
+			if (!ffmpegInstance) {
+				convertFormat = 'Loading FFmpeg...';
+				ffmpegInstance = new FFmpegBridge();
+				await ffmpegInstance.initialize();
+				convertFormat = format.toUpperCase();
+			}
+
+			const arrayBuffer = await result.blob.arrayBuffer();
+			await ffmpegInstance.writeFile('input.webm', new Uint8Array(arrayBuffer));
+
+			const outputFile = `output.${format}`;
+			const args = [
+				'-i', 'input.webm',
+				'-c:v', 'libx264',
+				'-preset', 'ultrafast',
+				'-crf', '18',
+				'-pix_fmt', 'yuv420p',
+				'-c:a', 'aac',
+				'-b:a', '192k',
+			];
+			if (format === 'mp4') args.push('-movflags', '+faststart');
+			args.push(outputFile);
+
+			await ffmpegInstance.exec(args, {
+				onProgress: (p) => {
+					convertProgress = Math.round(Math.max(0, Math.min(p, 1)) * 100);
+				},
+			});
+
+			const outputData = await ffmpegInstance.readFile(outputFile);
+			const mimeType = format === 'mp4' ? 'video/mp4' : 'video/quicktime';
+			const blob = new Blob([outputData], { type: mimeType });
+			downloadBlob(blob, `recording.${format}`);
+
+			await ffmpegInstance.deleteFile('input.webm');
+			await ffmpegInstance.deleteFile(outputFile);
+		} catch (err) {
+			console.error(`Conversion to ${format} failed:`, err);
+			handleDownloadWebm();
+		} finally {
+			converting = false;
+			convertFormat = '';
+			convertProgress = 0;
+		}
+	}
+
 	function formatDuration(seconds: number): string {
 		const m = Math.floor(seconds / 60);
 		const s = Math.floor(seconds % 60);
@@ -84,6 +157,58 @@
 		return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 	}
 </script>
+
+{#snippet downloadBtn(label: string)}
+	<div class="download-wrapper">
+		{#if converting}
+			<div class="converting-status">
+				<div class="convert-progress-track">
+					<div class="convert-progress-fill" style="width: {convertProgress}%"></div>
+				</div>
+				<span class="convert-text">
+					{convertFormat.includes('Loading') ? convertFormat : `Converting to ${convertFormat}... ${convertProgress}%`}
+				</span>
+			</div>
+		{:else}
+			<button class="action-btn secondary download-btn" onclick={() => showFormatPicker = !showFormatPicker}>
+				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+					<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+					<polyline points="7 10 12 15 17 10"/>
+					<line x1="12" y1="15" x2="12" y2="3"/>
+				</svg>
+				{label}
+				<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="chevron" class:open={showFormatPicker}>
+					<polyline points="6 9 12 15 18 9"/>
+				</svg>
+			</button>
+			{#if showFormatPicker}
+				<!-- svelte-ignore a11y_no_static_element_interactions -->
+				<div class="format-backdrop" onclick={() => showFormatPicker = false} onkeydown={() => {}}></div>
+				<div class="format-picker">
+					<button class="format-option" onclick={handleDownloadWebm}>
+						<div class="format-info">
+							<span class="format-name">WebM</span>
+							<span class="format-desc">Original quality · Instant</span>
+						</div>
+						<span class="format-badge instant">Instant</span>
+					</button>
+					<button class="format-option" onclick={() => handleDownloadFormat('mp4')}>
+						<div class="format-info">
+							<span class="format-name">MP4</span>
+							<span class="format-desc">H.264 · Best compatibility</span>
+						</div>
+					</button>
+					<button class="format-option" onclick={() => handleDownloadFormat('mov')}>
+						<div class="format-info">
+							<span class="format-name">MOV</span>
+							<span class="format-desc">Apple · Final Cut Pro</span>
+						</div>
+					</button>
+				</div>
+			{/if}
+		{/if}
+	</div>
+{/snippet}
 
 <div class="post-record" class:mounted>
 	<div class="bg-gradient"></div>
@@ -150,14 +275,7 @@
 						Login to Upload
 					</a>
 				{/if}
-				<button class="action-btn secondary" onclick={ondownload}>
-					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-						<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-						<polyline points="7 10 12 15 17 10"/>
-						<line x1="12" y1="15" x2="12" y2="3"/>
-					</svg>
-					Download
-				</button>
+				{@render downloadBtn('Download')}
 				<button class="action-btn ghost" onclick={onrerecord}>
 					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 						<path d="M1 4v6h6"/>
@@ -219,9 +337,7 @@
 					<button class="action-btn primary" onclick={handleGoToShare}>
 						View Video
 					</button>
-					<button class="action-btn secondary" onclick={ondownload}>
-						Download
-					</button>
+					{@render downloadBtn('Download')}
 				</div>
 			</div>
 
@@ -238,9 +354,7 @@
 					<button class="action-btn primary" onclick={handleRetryUpload}>
 						Try Again
 					</button>
-					<button class="action-btn secondary" onclick={ondownload}>
-						Download Instead
-					</button>
+					{@render downloadBtn('Download Instead')}
 				</div>
 			</div>
 		{/if}
@@ -556,5 +670,133 @@
 		font-size: 14px;
 		color: var(--text-secondary);
 		margin-bottom: 20px;
+	}
+
+	/* Download format picker */
+	.download-wrapper {
+		position: relative;
+	}
+
+	.download-btn {
+		position: relative;
+	}
+
+	.chevron {
+		transition: transform 0.2s ease;
+		margin-left: 2px;
+	}
+
+	.chevron.open {
+		transform: rotate(180deg);
+	}
+
+	.format-backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 99;
+	}
+
+	.format-picker {
+		position: absolute;
+		top: calc(100% + 8px);
+		left: 50%;
+		transform: translateX(-50%);
+		z-index: 100;
+		background: rgba(24, 24, 28, 0.98);
+		border: 1px solid rgba(255, 255, 255, 0.1);
+		border-radius: 12px;
+		padding: 6px;
+		min-width: 240px;
+		box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+		backdrop-filter: blur(20px);
+		animation: pickerIn 0.15s ease;
+	}
+
+	@keyframes pickerIn {
+		from {
+			opacity: 0;
+			transform: translateX(-50%) translateY(-4px);
+		}
+		to {
+			opacity: 1;
+			transform: translateX(-50%) translateY(0);
+		}
+	}
+
+	.format-option {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		width: 100%;
+		padding: 10px 14px;
+		border: none;
+		background: transparent;
+		border-radius: 8px;
+		color: var(--text-primary);
+		cursor: pointer;
+		transition: background 0.15s ease;
+		text-align: left;
+	}
+
+	.format-option:hover {
+		background: rgba(255, 255, 255, 0.08);
+	}
+
+	.format-info {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.format-name {
+		font-size: 14px;
+		font-weight: 500;
+	}
+
+	.format-desc {
+		font-size: 11px;
+		color: var(--text-tertiary);
+	}
+
+	.format-badge {
+		font-size: 10px;
+		padding: 2px 8px;
+		border-radius: 10px;
+		font-weight: 500;
+	}
+
+	.format-badge.instant {
+		background: rgba(34, 197, 94, 0.15);
+		color: #22c55e;
+	}
+
+	.converting-status {
+		padding: 12px 24px;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 10px;
+		min-width: 200px;
+	}
+
+	.convert-progress-track {
+		width: 100%;
+		height: 4px;
+		background: rgba(255, 255, 255, 0.08);
+		border-radius: 2px;
+		overflow: hidden;
+	}
+
+	.convert-progress-fill {
+		height: 100%;
+		background: linear-gradient(90deg, #ff3333, #ff6644);
+		border-radius: 2px;
+		transition: width 0.3s ease;
+	}
+
+	.convert-text {
+		font-size: 13px;
+		color: var(--text-secondary);
+		white-space: nowrap;
 	}
 </style>

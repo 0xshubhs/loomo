@@ -35,18 +35,14 @@ export class CanvasCompositor {
     this.screenVideo.srcObject = stream;
     this.screenVideo.play();
 
-    // Match canvas to actual screen capture resolution
+    // Use the actual captured resolution — no capping, so full screen is recorded
     const videoTrack = stream.getVideoTracks()[0];
     if (videoTrack) {
       const settings = videoTrack.getSettings();
       if (settings.width && settings.height) {
-        // Use actual captured resolution, capped at target
-        const w = Math.min(settings.width, this.targetWidth);
-        const h = Math.min(settings.height, this.targetHeight);
-        this.canvas.width = w;
-        this.canvas.height = h;
-        // Scale bubble radius proportionally
-        this.bubbleRadius = Math.round(Math.min(w, h) * 0.08);
+        this.canvas.width = settings.width;
+        this.canvas.height = settings.height;
+        this.bubbleRadius = Math.round(Math.min(settings.width, settings.height) * 0.08);
       }
     }
   }
@@ -96,17 +92,9 @@ export class CanvasCompositor {
     const w = this.canvas.width;
     const h = this.canvas.height;
 
-    // Draw screen - fill canvas maintaining aspect ratio
+    // Draw screen — full resolution, no cropping
     if (this.screenVideo.readyState >= 2) {
-      const vw = this.screenVideo.videoWidth;
-      const vh = this.screenVideo.videoHeight;
-      // Scale to fill (cover), then center
-      const scale = Math.max(w / vw, h / vh);
-      const sw = vw * scale;
-      const sh = vh * scale;
-      const sx = (w - sw) / 2;
-      const sy = (h - sh) / 2;
-      ctx.drawImage(this.screenVideo, sx, sy, sw, sh);
+      ctx.drawImage(this.screenVideo, 0, 0, w, h);
     }
 
     // Draw camera bubble
