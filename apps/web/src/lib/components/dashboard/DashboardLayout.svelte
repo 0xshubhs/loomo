@@ -150,6 +150,12 @@
 		</div>
 
 		<div class="header-right">
+			<a href="/edit" class="editor-link">
+				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+					<path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+				</svg>
+				Editor
+			</a>
 			<a href="/record" class="new-recording-btn">
 				<span class="rec-dot"></span>
 				New Recording
@@ -335,6 +341,10 @@
 							<!-- Card dropdown menu -->
 							{#if activeMenuId === video.id}
 								<div class="card-menu" onclick={(e) => e.preventDefault()}>
+									<a href="/edit/{video.id}" class="menu-item" onclick={(e) => e.stopPropagation()}>
+										<Icon name="settings" size={14} />
+										<span>Edit</span>
+									</a>
 									<button class="menu-item" onclick={(e) => startRename(video.id, video.title, e)}>
 										<Icon name="text" size={14} />
 										<span>Rename</span>
@@ -519,6 +529,27 @@
 		align-items: center;
 		gap: 16px;
 		flex-shrink: 0;
+	}
+
+	.editor-link {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 8px 18px;
+		background: rgba(255, 255, 255, 0.06);
+		border: 1px solid rgba(255, 255, 255, 0.1);
+		border-radius: 999px;
+		color: var(--text-secondary);
+		font-size: 13px;
+		font-weight: 500;
+		text-decoration: none;
+		transition: all 0.2s ease;
+	}
+
+	.editor-link:hover {
+		background: rgba(255, 255, 255, 0.1);
+		color: var(--text-primary);
+		border-color: rgba(255, 255, 255, 0.18);
 	}
 
 	.new-recording-btn {
@@ -1020,6 +1051,7 @@
 		cursor: pointer;
 		transition: all 0.1s ease;
 		border-radius: 6px;
+		text-decoration: none;
 	}
 
 	.menu-item:hover {
