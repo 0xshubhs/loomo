@@ -1,4 +1,4 @@
-export type RecordingMode = 'screen-cam' | 'screen-only' | 'camera-only';
+export type RecordingMode = 'screen-cam' | 'screen-only' | 'camera-only' | 'audio';
 export type RecordingState = 'idle' | 'requesting-permissions' | 'countdown' | 'recording' | 'paused' | 'processing' | 'done' | 'error';
 export type RecordingQuality = '1080p' | '720p' | '480p';
 

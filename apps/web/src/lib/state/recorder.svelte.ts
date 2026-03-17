@@ -20,7 +20,7 @@ export class RecorderStore {
 
   get isRecording() { return this.recordingState === 'recording'; }
   get isPaused() { return this.recordingState === 'paused'; }
-  get showCamera() { return this.mode !== 'screen-only' && this.cameraBubbleVisible; }
+  get showCamera() { return this.mode !== 'screen-only' && this.mode !== 'audio' && this.cameraBubbleVisible; }
 
   get formattedTime(): string {
     const h = Math.floor(this.elapsedSeconds / 3600);
@@ -30,9 +30,11 @@ export class RecorderStore {
     return h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
   }
 
+  get isAudioOnly() { return this.mode === 'audio'; }
+
   setMode(mode: RecordingMode) {
     this.mode = mode;
-    if (mode === 'screen-only') this.cameraBubbleVisible = false;
+    if (mode === 'screen-only' || mode === 'audio') this.cameraBubbleVisible = false;
     else this.cameraBubbleVisible = true;
   }
 

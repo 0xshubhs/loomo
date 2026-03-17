@@ -16,11 +16,12 @@
 		{ value: 'screen-cam', label: 'Screen + Camera', description: 'Record your screen with camera overlay' },
 		{ value: 'screen-only', label: 'Screen Only', description: 'Capture your entire screen' },
 		{ value: 'camera-only', label: 'Camera Only', description: 'Record from your webcam' },
+		{ value: 'audio', label: 'Audio Only', description: 'Record a voiceover or audio clip' },
 	];
 
 	const qualities: RecordingQuality[] = ['1080p', '720p', '480p'];
 
-	let showCameraPreview = $derived(recorder.mode !== 'screen-only');
+	let showCameraPreview = $derived(recorder.mode !== 'screen-only' && recorder.mode !== 'audio');
 
 	let selectedCameraLabel = $derived(
 		recorder.cameras.find(c => c.deviceId === recorder.selectedCameraId)?.label ?? 'Select camera'
@@ -159,10 +160,17 @@
 									<line x1="8" y1="21" x2="16" y2="21"/>
 									<line x1="12" y1="17" x2="12" y2="21"/>
 								</svg>
-							{:else}
+							{:else if mode.value === 'camera-only'}
 								<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
 									<path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
 									<circle cx="12" cy="13" r="4"/>
+								</svg>
+							{:else}
+								<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+									<path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+									<path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+									<line x1="12" y1="19" x2="12" y2="23"/>
+									<line x1="8" y1="23" x2="16" y2="23"/>
 								</svg>
 							{/if}
 						</div>
@@ -175,7 +183,7 @@
 
 		<!-- Device selectors -->
 		<div class="device-selectors">
-			{#if recorder.mode !== 'screen-only'}
+			{#if recorder.mode !== 'screen-only' && recorder.mode !== 'audio'}
 				<div class="section">
 					<label class="label">Camera</label>
 					<div class="custom-select" class:open={cameraDropdownOpen}>
@@ -256,21 +264,23 @@
 			</div>
 		</div>
 
-		<!-- Quality -->
-		<div class="section">
-			<label class="label">Quality</label>
-			<div class="quality-group">
-				{#each qualities as q}
-					<button
-						class="quality-pill"
-						class:active={recorder.quality === q}
-						onclick={() => recorder.quality = q}
-					>
-						{q}
-					</button>
-				{/each}
+		<!-- Quality (not shown for audio-only) -->
+		{#if recorder.mode !== 'audio'}
+			<div class="section">
+				<label class="label">Quality</label>
+				<div class="quality-group">
+					{#each qualities as q}
+						<button
+							class="quality-pill"
+							class:active={recorder.quality === q}
+							onclick={() => recorder.quality = q}
+						>
+							{q}
+						</button>
+					{/each}
+				</div>
 			</div>
-		</div>
+		{/if}
 
 		<!-- Start button -->
 		<button class="start-btn" onclick={onstart}>
@@ -433,7 +443,7 @@
 
 	.mode-grid {
 		display: grid;
-		grid-template-columns: repeat(3, 1fr);
+		grid-template-columns: repeat(4, 1fr);
 		gap: 12px;
 	}
 

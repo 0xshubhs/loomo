@@ -10,6 +10,7 @@
 	import { getTrackIndexFromY } from '$lib/timeline/timeline-engine.js';
 	import { generateId } from '$lib/utils/id.js';
 	import type { Clip } from '$lib/types/index.js';
+	import { DEFAULT_CLIP_FILTERS, DEFAULT_TRANSFORM, DEFAULT_CROP, DEFAULT_CHROMA_KEY, DEFAULT_CLIP_POSITION } from '$lib/types/timeline.js';
 
 	const timeline = getTimeline();
 	const playback = getPlayback();
@@ -53,6 +54,7 @@
 			tracks: timeline.tracks,
 			transitions: timeline.transitions,
 			textOverlays: timeline.textOverlays,
+			shapeOverlays: timeline.shapeOverlays,
 			pixelsPerSecond: ui.pixelsPerSecond,
 			scrollX: ui.timelineScrollX,
 			scrollY: ui.timelineScrollY,
@@ -76,6 +78,16 @@
 			playback.seek(dragState.startTime);
 		} else if (dragState.clipId) {
 			selection.selectClip(dragState.clipId, e.shiftKey);
+			// Auto-select all clips in the same group
+			const clickedClip = timeline.getClipById(dragState.clipId);
+			if (clickedClip?.groupId && !e.shiftKey) {
+				const groupClips = timeline.getGroupClips(clickedClip.groupId);
+				for (const gc of groupClips) {
+					if (gc.id !== dragState.clipId) {
+						selection.selectClip(gc.id, true);
+					}
+				}
+			}
 		} else if (dragState.mode === 'select') {
 			selection.deselectAll();
 		}
@@ -113,7 +125,18 @@
 			const deltaTime = deltaX / ui.pixelsPerSecond;
 			if (Math.abs(deltaTime) > 0.01) {
 				const newStart = dragState.snapTime ?? dragState.startTime + deltaTime;
+				const movedClip = timeline.getClipById(dragState.clipId);
 				commands.execute(new MoveClipCommand(timeline, dragState.clipId, newStart));
+				// Move all other clips in the same group by the same delta
+				if (movedClip?.groupId) {
+					const groupClips = timeline.getGroupClips(movedClip.groupId);
+					const actualDelta = newStart - dragState.startTime;
+					for (const gc of groupClips) {
+						if (gc.id !== dragState.clipId) {
+							commands.execute(new MoveClipCommand(timeline, gc.id, gc.timelineStart + actualDelta));
+						}
+					}
+				}
 			}
 		} else if ((dragState.mode === 'trim-start' || dragState.mode === 'trim-end') && dragState.clipId) {
 			const deltaX = dragState.currentX - dragState.startX;
@@ -176,6 +199,17 @@
 			muted: false,
 			speed: 1,
 			opacity: 1,
+			filters: { ...DEFAULT_CLIP_FILTERS },
+			filterPreset: null,
+			transform: { ...DEFAULT_TRANSFORM },
+			crop: { ...DEFAULT_CROP },
+			fadeIn: 0,
+			fadeOut: 0,
+			noiseSuppression: false,
+			chromaKey: { ...DEFAULT_CHROMA_KEY },
+			reversed: false,
+			position: { ...DEFAULT_CLIP_POSITION },
+			groupId: null,
 		};
 
 		commands.execute(new AddClipCommand(timeline, targetTrack.id, clip));

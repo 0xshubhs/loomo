@@ -18,7 +18,9 @@
 
 	const auth = getAuth();
 
-	let videoUrl = $derived(URL.createObjectURL(result.blob));
+	let mediaUrl = $derived(URL.createObjectURL(result.blob));
+	let isAudioOnly = $derived(result.mimeType.startsWith('audio/'));
+	/** @deprecated use mediaUrl */ let videoUrl = $derived(mediaUrl);
 	let copied = $state(false);
 	let mounted = $state(false);
 
@@ -49,6 +51,10 @@
 			const url = `${window.location.origin}/share/${video.share_id}`;
 			shareUrl = url;
 			uploadState = 'done';
+			// Auto-copy link to clipboard
+			await copyToClipboard(url);
+			copied = true;
+			setTimeout(() => (copied = false), 3000);
 		} catch (err) {
 			console.error('Upload failed:', err);
 			uploadError = err instanceof Error ? err.message : 'Upload failed';
@@ -90,7 +96,64 @@
 
 	function handleDownloadWebm() {
 		showFormatPicker = false;
-		downloadBlob(result.blob, 'recording.webm');
+		const ext = isAudioOnly ? 'webm' : 'webm';
+		const prefix = isAudioOnly ? 'audio-recording' : 'recording';
+		downloadBlob(result.blob, `${prefix}.${ext}`);
+	}
+
+	async function handleDownloadGif() {
+		showFormatPicker = false;
+		converting = true;
+		convertFormat = 'GIF';
+		convertProgress = 0;
+
+		try {
+			if (!ffmpegInstance) {
+				convertFormat = 'Loading FFmpeg...';
+				ffmpegInstance = new FFmpegBridge();
+				await ffmpegInstance.initialize();
+				convertFormat = 'GIF';
+			}
+
+			const arrayBuffer = await result.blob.arrayBuffer();
+			await ffmpegInstance.writeFile('input.webm', new Uint8Array(arrayBuffer));
+
+			// Generate palette for better GIF quality
+			await ffmpegInstance.exec([
+				'-i', 'input.webm',
+				'-vf', 'fps=10,scale=480:-1:flags=lanczos,palettegen',
+				'-y', 'palette.png',
+			], {
+				onProgress: (p) => {
+					convertProgress = Math.round(Math.max(0, Math.min(p, 1)) * 50);
+				},
+			});
+
+			await ffmpegInstance.exec([
+				'-i', 'input.webm',
+				'-i', 'palette.png',
+				'-lavfi', 'fps=10,scale=480:-1:flags=lanczos [x]; [x][1:v] paletteuse',
+				'-y', 'output.gif',
+			], {
+				onProgress: (p) => {
+					convertProgress = 50 + Math.round(Math.max(0, Math.min(p, 1)) * 50);
+				},
+			});
+
+			const outputData = await ffmpegInstance.readFile('output.gif');
+			const blob = new Blob([outputData], { type: 'image/gif' });
+			downloadBlob(blob, 'recording.gif');
+
+			await ffmpegInstance.deleteFile('input.webm');
+			await ffmpegInstance.deleteFile('palette.png');
+			await ffmpegInstance.deleteFile('output.gif');
+		} catch (err) {
+			console.error('GIF conversion failed:', err);
+		} finally {
+			converting = false;
+			convertFormat = '';
+			convertProgress = 0;
+		}
 	}
 
 	async function handleDownloadFormat(format: 'mp4' | 'mov') {
@@ -204,6 +267,12 @@
 							<span class="format-desc">Apple · Final Cut Pro</span>
 						</div>
 					</button>
+					<button class="format-option" onclick={handleDownloadGif}>
+						<div class="format-info">
+							<span class="format-name">GIF</span>
+							<span class="format-desc">Animated · Slack, GitHub, email</span>
+						</div>
+					</button>
 				</div>
 			{/if}
 		{/if}
@@ -214,13 +283,27 @@
 	<div class="bg-gradient"></div>
 
 	<div class="content">
-		<!-- Video Preview -->
-		<div class="preview-card">
-			<div class="preview-container">
-				<!-- svelte-ignore a11y_media_has_caption -->
-				<video src={videoUrl} controls class="preview-video"></video>
+		<!-- Media Preview -->
+		{#if isAudioOnly}
+			<div class="audio-preview-card">
+				<div class="audio-waveform-icon">
+					<svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+						<path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+						<path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+						<line x1="12" y1="19" x2="12" y2="23"/>
+						<line x1="8" y1="23" x2="16" y2="23"/>
+					</svg>
+				</div>
+				<audio src={mediaUrl} controls class="audio-player"></audio>
 			</div>
-		</div>
+		{:else}
+			<div class="preview-card">
+				<div class="preview-container">
+					<!-- svelte-ignore a11y_media_has_caption -->
+					<video src={mediaUrl} controls class="preview-video"></video>
+				</div>
+			</div>
+		{/if}
 
 		<!-- Stats row -->
 		<div class="stats-row">
@@ -307,7 +390,7 @@
 					</svg>
 				</div>
 				<p class="done-heading">Your video is live!</p>
-				<p class="done-subtext">HD version will be ready shortly</p>
+				<p class="done-subtext">Link copied to clipboard · HD version will be ready shortly</p>
 
 				<div class="share-url-row">
 					<input
@@ -394,6 +477,31 @@
 		width: 640px;
 		max-width: 90vw;
 		padding: 48px 0;
+	}
+
+	/* Audio preview */
+	.audio-preview-card {
+		border-radius: 16px;
+		background: rgba(255, 255, 255, 0.03);
+		border: 1px solid rgba(255, 255, 255, 0.08);
+		padding: 40px 32px;
+		margin-bottom: 20px;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 24px;
+	}
+
+	.audio-waveform-icon {
+		color: var(--text-tertiary);
+		opacity: 0.6;
+	}
+
+	.audio-player {
+		width: 100%;
+		max-width: 480px;
+		height: 48px;
+		border-radius: 8px;
 	}
 
 	/* Video preview */

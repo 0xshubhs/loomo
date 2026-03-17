@@ -9,6 +9,7 @@ import { CommandManager } from '$lib/commands/command-manager.svelte.js';
 import { AuthStore } from './auth.svelte.js';
 import { RecorderStore } from './recorder.svelte.js';
 import { DashboardStore } from './dashboard.svelte.js';
+import { CaptionStore } from './captions.svelte.js';
 
 const KEYS = {
 	project: Symbol('project'),
@@ -21,6 +22,7 @@ const KEYS = {
 	auth: Symbol('auth'),
 	recorder: Symbol('recorder'),
 	dashboard: Symbol('dashboard'),
+	captions: Symbol('captions'),
 } as const;
 
 export interface EditorContext {
@@ -31,6 +33,7 @@ export interface EditorContext {
 	ui: UIStore;
 	selection: SelectionStore;
 	commands: CommandManager;
+	captions: CaptionStore;
 }
 
 export function createEditorContext(): EditorContext {
@@ -41,6 +44,7 @@ export function createEditorContext(): EditorContext {
 	const ui = new UIStore();
 	const selection = new SelectionStore();
 	const commands = new CommandManager();
+	const captions = new CaptionStore();
 
 	setContext(KEYS.project, project);
 	setContext(KEYS.timeline, timeline);
@@ -49,8 +53,9 @@ export function createEditorContext(): EditorContext {
 	setContext(KEYS.ui, ui);
 	setContext(KEYS.selection, selection);
 	setContext(KEYS.commands, commands);
+	setContext(KEYS.captions, captions);
 
-	return { project, timeline, mediaLibrary, playback, ui, selection, commands };
+	return { project, timeline, mediaLibrary, playback, ui, selection, commands, captions };
 }
 
 export function getProject(): ProjectStore {
@@ -73,6 +78,9 @@ export function getSelection(): SelectionStore {
 }
 export function getCommands(): CommandManager {
 	return getContext(KEYS.commands);
+}
+export function getCaptions(): CaptionStore {
+	return getContext(KEYS.captions);
 }
 
 export interface AppContext {

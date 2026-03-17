@@ -11,9 +11,10 @@
 		createdAt: string;
 		viewCount: number;
 		videoId: string;
+		gifUrl?: string;
 	}
 
-	let { title, authorName, authorAvatar, createdAt, viewCount, videoId }: Props = $props();
+	let { title, authorName, authorAvatar, createdAt, viewCount, videoId, gifUrl }: Props = $props();
 
 	let copied = $state(false);
 
@@ -64,6 +65,17 @@
 
 		<div class="meta-right">
 			<ViewCounter {videoId} initialCount={viewCount} />
+
+			{#if gifUrl}
+				<a href={gifUrl} download="clip.gif" class="share-btn gif-btn" aria-label="Download GIF">
+					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+						<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+						<polyline points="7 10 12 15 17 10"/>
+						<line x1="12" y1="15" x2="12" y2="3"/>
+					</svg>
+					GIF
+				</a>
+			{/if}
 
 			<button class="share-btn" onclick={handleShare}>
 				<Icon name={copied ? 'check' : 'link'} size={14} />
@@ -156,5 +168,8 @@
 	.share-btn:hover {
 		background: rgba(255, 255, 255, 0.1);
 		border-color: rgba(255, 255, 255, 0.15);
+	}
+	.gif-btn {
+		text-decoration: none;
 	}
 </style>

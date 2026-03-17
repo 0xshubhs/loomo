@@ -1,12 +1,13 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { getTimeline, getPlayback, getMediaLibrary, getUI, getSelection, getCommands } from '$lib/state/context.js';
+	import { getTimeline, getPlayback, getMediaLibrary, getUI, getSelection, getCommands, getCaptions } from '$lib/state/context.js';
 	import { FFmpegBridge } from '$lib/engine/ffmpeg-bridge.svelte.js';
 	import { importMediaFile } from '$lib/engine/media-import.js';
 	import { exportTimeline, downloadBlob } from '$lib/engine/export-pipeline.js';
 	import { matchShortcut } from '$lib/utils/keyboard.js';
-	import { SplitClipCommand, RemoveClipCommand } from '$lib/commands/clip-commands.js';
+	import { SplitClipCommand, RemoveClipCommand, RemoveGapsCommand } from '$lib/commands/clip-commands.js';
 	import { AddTextOverlayCommand } from '$lib/commands/text-commands.js';
+	import { GroupClipsCommand, UngroupClipsCommand } from '$lib/commands/group-commands.js';
 	import type { ExportConfig, ExportProgress } from '$lib/types/index.js';
 
 	import EditorLayout from '$lib/components/layout/EditorLayout.svelte';
@@ -17,6 +18,9 @@
 	import TimelinePanel from '$lib/components/timeline/TimelinePanel.svelte';
 	import PropertiesPanel from '$lib/components/properties/PropertiesPanel.svelte';
 	import ExportDialog from '$lib/components/export/ExportDialog.svelte';
+	import CaptionDialog from '$lib/components/shared/CaptionDialog.svelte';
+	import SilenceRemovalDialog from '$lib/components/shared/SilenceRemovalDialog.svelte';
+	import VoiceoverDialog from '$lib/components/shared/VoiceoverDialog.svelte';
 
 	const timeline = getTimeline();
 	const playback = getPlayback();
@@ -24,6 +28,7 @@
 	const ui = getUI();
 	const selection = getSelection();
 	const commands = getCommands();
+	const captions = getCaptions();
 
 	let ffmpeg = new FFmpegBridge();
 	let exportProgress = $state<ExportProgress | null>(null);
@@ -94,7 +99,9 @@
 					const asset = mediaLibrary.getAssetById(assetId);
 					if (!asset) return undefined;
 					return { file: asset.file, name: asset.name };
-				}
+				},
+				timeline.shapeOverlays,
+				captions.captionTrack
 			);
 
 			downloadBlob(blob, `export.${config.format}`);
@@ -184,6 +191,36 @@
 				}
 				break;
 			}
+			case 'timeline.group':
+				if (selection.selectedClipIds.size >= 2) {
+					commands.execute(new GroupClipsCommand(timeline, selection.selectedClipIds));
+				}
+				break;
+			case 'timeline.ungroup':
+				for (const clipId of selection.selectedClipIds) {
+					const clip = timeline.getClipById(clipId);
+					if (clip?.groupId) {
+						commands.execute(new UngroupClipsCommand(timeline, clip.groupId));
+						break;
+					}
+				}
+				break;
+			case 'timeline.removeGaps':
+				commands.execute(new RemoveGapsCommand(timeline));
+				break;
+			case 'panels.toggleSidebar':
+				ui.sidebarCollapsed = !ui.sidebarCollapsed;
+				break;
+			case 'panels.toggleTimeline':
+				ui.timelineCollapsed = !ui.timelineCollapsed;
+				break;
+			case 'panels.toggleAll':
+				ui.sidebarCollapsed = !ui.sidebarCollapsed;
+				ui.timelineCollapsed = !ui.timelineCollapsed;
+				break;
+			case 'preview.fullscreen':
+				ui.previewFullscreen = !ui.previewFullscreen;
+				break;
 		}
 	}
 
@@ -265,6 +302,10 @@
 			<ExportDialog ffmpegReady={ffmpeg.ready} onexport={handleExport} />
 		{/snippet}
 	</EditorLayout>
+
+	<CaptionDialog />
+	<SilenceRemovalDialog />
+	<VoiceoverDialog />
 {/if}
 
 <style>

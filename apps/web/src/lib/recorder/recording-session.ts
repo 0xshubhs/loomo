@@ -25,8 +25,12 @@ export class RecordingSession {
 
     try {
       let outputStream: MediaStream;
+      let isAudioOnly = mode === 'audio';
 
-      if (mode === 'camera-only') {
+      if (mode === 'audio') {
+        const micStream = await this.streamManager.requestAudioOnly(selectedMicId);
+        outputStream = micStream;
+      } else if (mode === 'camera-only') {
         const camStream = await this.streamManager.requestCamera(selectedCameraId);
         this.store.cameraStream = camStream;
         const micStream = await this.streamManager.requestMicrophone(selectedMicId);
@@ -73,12 +77,12 @@ export class RecordingSession {
       }
 
       // Create MediaRecorder with best available codec
-      const mimeType = this.getSupportedMimeType();
-      const bitrate = this.getBitrate(quality, mode === 'screen-cam');
-      this.mediaRecorder = new MediaRecorder(outputStream, {
-        mimeType,
-        videoBitsPerSecond: bitrate,
-      });
+      const mimeType = isAudioOnly ? this.getSupportedAudioMimeType() : this.getSupportedMimeType();
+      const recorderOptions: MediaRecorderOptions = { mimeType };
+      if (!isAudioOnly) {
+        recorderOptions.videoBitsPerSecond = this.getBitrate(quality, mode === 'screen-cam');
+      }
+      this.mediaRecorder = new MediaRecorder(outputStream, recorderOptions);
 
       this.chunks = [];
       this.mediaRecorder.ondataavailable = (e) => {
@@ -128,8 +132,9 @@ export class RecordingSession {
         const blob = new Blob(this.chunks, { type: this.mediaRecorder!.mimeType });
         const duration = this.store.elapsedSeconds;
 
-        // Generate thumbnail
-        const thumbnailUrl = await this.generateThumbnail(blob);
+        // Generate thumbnail (skip for audio-only)
+        const isAudio = this.store.mode === 'audio';
+        const thumbnailUrl = isAudio ? '' : await this.generateThumbnail(blob);
 
         const result: RecordingResult = {
           blob,
@@ -228,6 +233,18 @@ export class RecordingSession {
     }
 
     return new MediaStream(tracks);
+  }
+
+  private getSupportedAudioMimeType(): string {
+    const types = [
+      'audio/webm;codecs=opus',
+      'audio/ogg;codecs=opus',
+      'audio/webm',
+    ];
+    for (const type of types) {
+      if (MediaRecorder.isTypeSupported(type)) return type;
+    }
+    return 'audio/webm';
   }
 
   private getSupportedMimeType(): string {

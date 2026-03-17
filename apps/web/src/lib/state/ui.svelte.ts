@@ -9,6 +9,13 @@ export class UIStore {
 	snapEnabled = $state<boolean>(true);
 	magneticSnap = $state<boolean>(true);
 	activeTool = $state<'select' | 'razor' | 'hand'>('select');
+	showCaptionDialog = $state<boolean>(false);
+	showSilenceRemoval = $state<boolean>(false);
+	showVoiceoverDialog = $state<boolean>(false);
+	previewFillMode = $state<'fit' | 'fill'>('fit');
+	previewFullscreen = $state<boolean>(false);
+	sidebarCollapsed = $state<boolean>(false);
+	timelineCollapsed = $state<boolean>(false);
 
 	get pixelsPerSecond(): number {
 		return this.timelineZoom;

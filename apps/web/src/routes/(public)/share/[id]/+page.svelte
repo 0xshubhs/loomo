@@ -18,6 +18,7 @@
 
 	let hlsUrl = $derived(video?.hls_url ?? '');
 	let sourceUrl = $derived(video?.source_url ?? '');
+	let gifUrl = $derived(video?.gif_url ?? '');
 	let videoId = $derived($page.params.id ?? '');
 
 	function handleSeek(time: number) {
@@ -81,6 +82,12 @@
 </svelte:head>
 
 <div class="share-page">
+	<header class="share-header">
+		<a href="/" class="brand-link">
+			<span class="brand-logo">D</span>
+			<span class="brand-name">DITTOO</span>
+		</a>
+	</header>
 	{#if video}
 		<ShareLayout
 			transcriptSegments={video.transcript_segments ?? []}
@@ -104,6 +111,7 @@
 					createdAt={video.created_at ?? new Date().toISOString()}
 					viewCount={video.view_count ?? 0}
 					{videoId}
+					gifUrl={gifUrl || undefined}
 				/>
 			{/snippet}
 			{#snippet reactionsSnippet()}
@@ -133,6 +141,36 @@
 		min-height: 100vh;
 		background: var(--bg-primary);
 		color: var(--text-primary);
+	}
+	.share-header {
+		padding: 16px 24px;
+		display: flex;
+		align-items: center;
+	}
+	.brand-link {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+		text-decoration: none;
+		color: var(--text-primary);
+	}
+	.brand-logo {
+		width: 28px;
+		height: 28px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		background: linear-gradient(135deg, #ff3333, #ff6644);
+		border-radius: 8px;
+		font-size: 14px;
+		font-weight: 700;
+		color: white;
+	}
+	.brand-name {
+		font-size: 15px;
+		font-weight: 700;
+		letter-spacing: 0.05em;
+		color: var(--text-secondary, rgba(255, 255, 255, 0.6));
 	}
 	.not-found {
 		display: flex;

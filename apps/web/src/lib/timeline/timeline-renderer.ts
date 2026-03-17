@@ -1,11 +1,12 @@
 import type { Track, Clip } from '$lib/types/index.js';
-import type { Transition, TextOverlay } from '$lib/types/index.js';
+import type { Transition, TextOverlay, ShapeOverlay } from '$lib/types/index.js';
 import { formatDuration } from '$lib/utils/time.js';
 
 export interface RenderState {
 	tracks: Track[];
 	transitions: Transition[];
 	textOverlays: TextOverlay[];
+	shapeOverlays: ShapeOverlay[];
 	pixelsPerSecond: number;
 	scrollX: number;
 	scrollY: number;
@@ -35,12 +36,27 @@ const COLORS = {
 	snapLine: '#ffaa00',
 	transition: '#444455',
 	textOverlay: '#334433',
+	shapeOverlay: '#333355',
 	selection: 'rgba(255, 255, 255, 0.05)',
 	trimHandle: '#ffffff',
 	trackSeparator: '#222222',
 	clipName: '#cccccc',
 	clipTime: '#888888',
 } as const;
+
+const GROUP_COLORS = [
+	'#ff6b6b', '#4ecdc4', '#ffe66d', '#a06cd5',
+	'#ff9ff3', '#54a0ff', '#5f27cd', '#01a3a4',
+	'#f368e0', '#ff9f43', '#ee5a24', '#0abde3',
+] as const;
+
+function getGroupColor(groupId: string): string {
+	let hash = 0;
+	for (let i = 0; i < groupId.length; i++) {
+		hash = ((hash << 5) - hash + groupId.charCodeAt(i)) | 0;
+	}
+	return GROUP_COLORS[Math.abs(hash) % GROUP_COLORS.length];
+}
 
 const RULER_HEIGHT = 30;
 const TRACK_HEIGHT = 80;
@@ -121,6 +137,7 @@ export class TimelineRenderer {
 		this.renderTracks(ctx, width, height, state);
 		this.renderTransitions(ctx, state);
 		this.renderTextOverlayMarkers(ctx, state);
+		this.renderShapeOverlayMarkers(ctx, state);
 		this.renderPlayhead(ctx, height, state);
 
 		if (state.snapLine !== null) {
@@ -271,6 +288,25 @@ export class TimelineRenderer {
 		ctx.stroke();
 		ctx.lineWidth = 1;
 
+		// Group indicator border
+		if (clip.groupId) {
+			const groupColor = getGroupColor(clip.groupId);
+			ctx.strokeStyle = groupColor;
+			ctx.lineWidth = 2;
+			ctx.setLineDash([4, 3]);
+			ctx.beginPath();
+			ctx.roundRect(x - 1, trackY, w + 2, TRACK_HEIGHT, 5);
+			ctx.stroke();
+			ctx.setLineDash([]);
+			ctx.lineWidth = 1;
+
+			// Small group indicator dot in top-right corner
+			ctx.fillStyle = groupColor;
+			ctx.beginPath();
+			ctx.arc(x + w - 8, trackY + 8, 3, 0, Math.PI * 2);
+			ctx.fill();
+		}
+
 		// Clip name
 		if (w > 30) {
 			ctx.fillStyle = COLORS.clipName;
@@ -352,6 +388,34 @@ export class TimelineRenderer {
 				ctx.font = '9px Inter, sans-serif';
 				ctx.textAlign = 'left';
 				ctx.fillText('T: ' + overlay.text.slice(0, 15), x + 4, y + TRACK_HEIGHT - 7, w - 8);
+			}
+		}
+	}
+
+	private renderShapeOverlayMarkers(ctx: CanvasRenderingContext2D, state: RenderState): void {
+		if (!state.shapeOverlays || state.shapeOverlays.length === 0) return;
+
+		// Render shape markers on the first video track
+		const videoTrackIndex = state.tracks.findIndex((t) => t.type === 'video');
+		if (videoTrackIndex === -1) return;
+
+		for (const shape of state.shapeOverlays) {
+			const y = RULER_HEIGHT + videoTrackIndex * (TRACK_HEIGHT + TRACK_GAP) - state.scrollY;
+			const x = shape.startTime * state.pixelsPerSecond - state.scrollX;
+			const w = shape.duration * state.pixelsPerSecond;
+
+			ctx.fillStyle = COLORS.shapeOverlay;
+			ctx.globalAlpha = 0.7;
+			ctx.beginPath();
+			ctx.roundRect(x, y + TRACK_HEIGHT - 38, w, 16, 3);
+			ctx.fill();
+			ctx.globalAlpha = 1;
+
+			if (w > 20) {
+				ctx.fillStyle = '#aaaacc';
+				ctx.font = '9px Inter, sans-serif';
+				ctx.textAlign = 'left';
+				ctx.fillText('S: ' + shape.shapeId, x + 4, y + TRACK_HEIGHT - 26, w - 8);
 			}
 		}
 	}

@@ -1,12 +1,13 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { getTimeline, getPlayback, getMediaLibrary, getUI, getSelection, getCommands } from '$lib/state/context.js';
+	import { getTimeline, getPlayback, getMediaLibrary, getUI, getSelection, getCommands, getCaptions } from '$lib/state/context.js';
 	import { FFmpegBridge } from '$lib/engine/ffmpeg-bridge.svelte.js';
 	import { importMediaFile } from '$lib/engine/media-import.js';
 	import { exportTimeline, downloadBlob } from '$lib/engine/export-pipeline.js';
 	import { matchShortcut } from '$lib/utils/keyboard.js';
-	import { SplitClipCommand, RemoveClipCommand } from '$lib/commands/clip-commands.js';
+	import { SplitClipCommand, RemoveClipCommand, PasteClipsCommand, DuplicateClipsCommand, RemoveGapsCommand } from '$lib/commands/clip-commands.js';
 	import { AddTextOverlayCommand } from '$lib/commands/text-commands.js';
+	import { GroupClipsCommand, UngroupClipsCommand } from '$lib/commands/group-commands.js';
 	import type { ExportConfig, ExportProgress } from '$lib/types/index.js';
 
 	import EditorLayout from '$lib/components/layout/EditorLayout.svelte';
@@ -17,6 +18,10 @@
 	import TimelinePanel from '$lib/components/timeline/TimelinePanel.svelte';
 	import PropertiesPanel from '$lib/components/properties/PropertiesPanel.svelte';
 	import ExportDialog from '$lib/components/export/ExportDialog.svelte';
+	import ShortcutsModal from '$lib/components/shared/ShortcutsModal.svelte';
+	import CaptionDialog from '$lib/components/shared/CaptionDialog.svelte';
+	import SilenceRemovalDialog from '$lib/components/shared/SilenceRemovalDialog.svelte';
+	import VoiceoverDialog from '$lib/components/shared/VoiceoverDialog.svelte';
 
 	const timeline = getTimeline();
 	const playback = getPlayback();
@@ -24,6 +29,7 @@
 	const ui = getUI();
 	const selection = getSelection();
 	const commands = getCommands();
+	const captions = getCaptions();
 
 	let ffmpeg = new FFmpegBridge();
 	let exportProgress = $state<ExportProgress | null>(null);
@@ -31,6 +37,7 @@
 	let ffmpegError = $state<string | null>(null);
 	let importError = $state<string | null>(null);
 	let importStatus = $state<string | null>(null);
+	let showShortcuts = $state(false);
 
 	onMount(async () => {
 		appReady = true;
@@ -94,7 +101,9 @@
 					const asset = mediaLibrary.getAssetById(assetId);
 					if (!asset) return undefined;
 					return { file: asset.file, name: asset.name };
-				}
+				},
+				timeline.shapeOverlays,
+				captions.captionTrack
 			);
 
 			downloadBlob(blob, `export.${config.format}`);
@@ -133,8 +142,12 @@
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
+		// Allow Escape through even in modals
+		if (e.key === 'Escape' && showShortcuts) return;
+
 		const target = e.target as HTMLElement;
 		if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT') return;
+		if (showShortcuts) return;
 
 		const shortcut = matchShortcut(e);
 		if (!shortcut) return;
@@ -143,6 +156,15 @@
 
 		switch (shortcut.action) {
 			case 'playback.toggle': playback.toggle(); break;
+			case 'playback.pause': playback.pause(); break;
+			case 'playback.rewind': playback.seekRelative(-5); break;
+			case 'playback.forward': playback.seekRelative(5); break;
+			case 'playback.start': playback.goToStart(); break;
+			case 'playback.end': playback.seek(timeline.totalDuration); break;
+			case 'playback.framePrev': playback.seekRelative(-1 / 30); break;
+			case 'playback.frameNext': playback.seekRelative(1 / 30); break;
+			case 'playback.jumpPrev': playback.seekRelative(-5); break;
+			case 'playback.jumpNext': playback.seekRelative(5); break;
 			case 'timeline.split':
 				for (const clipId of selection.selectedClipIds) {
 					const clip = timeline.getClipById(clipId);
@@ -163,17 +185,59 @@
 			case 'selection.all':
 				for (const clip of timeline.flatClips) selection.selectClip(clip.id, true);
 				break;
+			case 'clipboard.copy': {
+				const clipsToCopy = Array.from(selection.selectedClipIds)
+					.map((id) => timeline.getClipById(id))
+					.filter((c): c is NonNullable<typeof c> => c != null);
+				if (clipsToCopy.length > 0) {
+					selection.copySelectedClips(clipsToCopy);
+				}
+				break;
+			}
+			case 'clipboard.paste': {
+				if (selection.hasClipboard) {
+					const cmd = new PasteClipsCommand(timeline, selection.clipboardClips, playback.currentTime);
+					commands.execute(cmd);
+					selection.deselectAll();
+					for (const id of cmd.getPastedIds()) {
+						selection.selectClip(id, true);
+					}
+				}
+				break;
+			}
+			case 'clipboard.cut': {
+				const clipsToCut = Array.from(selection.selectedClipIds)
+					.map((id) => timeline.getClipById(id))
+					.filter((c): c is NonNullable<typeof c> => c != null);
+				if (clipsToCut.length > 0) {
+					selection.copySelectedClips(clipsToCut);
+					const idsToDelete = Array.from(selection.selectedClipIds);
+					selection.deselectAll();
+					for (const clipId of idsToDelete) {
+						commands.execute(new RemoveClipCommand(timeline, clipId));
+					}
+				}
+				break;
+			}
+			case 'editing.duplicate': {
+				const idsToDuplicate = Array.from(selection.selectedClipIds);
+				if (idsToDuplicate.length > 0) {
+					const cmd = new DuplicateClipsCommand(timeline, idsToDuplicate);
+					commands.execute(cmd);
+					selection.deselectAll();
+					for (const id of cmd.getDuplicatedIds()) {
+						selection.selectClip(id, true);
+					}
+				}
+				break;
+			}
 			case 'zoom.in': ui.zoomIn(); break;
 			case 'zoom.out': ui.zoomOut(); break;
 			case 'zoom.fit': ui.zoomToFit(timeline.totalDuration, window.innerWidth - ui.panelSizes.left - 120); break;
-			case 'playback.start': playback.goToStart(); break;
-			case 'playback.end': playback.seek(timeline.totalDuration); break;
-			case 'playback.framePrev': playback.seekRelative(-1 / 30); break;
-			case 'playback.frameNext': playback.seekRelative(1 / 30); break;
-			case 'playback.jumpPrev': playback.seekRelative(-5); break;
-			case 'playback.jumpNext': playback.seekRelative(5); break;
-			case 'export.open': ui.showExportDialog = true; break;
-			case 'import.open': openFileDialog(); break;
+			case 'timeline.inPoint': break; // Future: set in point
+			case 'timeline.outPoint': break; // Future: set out point
+			case 'tool.select': ui.activeTool = 'select'; break;
+			case 'tool.razor': ui.activeTool = 'razor'; break;
 			case 'text.add': {
 				const videoTrack = timeline.tracks.find(t => t.type === 'video');
 				if (videoTrack) {
@@ -184,6 +248,43 @@
 				}
 				break;
 			}
+			case 'marker.add': break;
+			case 'shortcuts.show': showShortcuts = true; break;
+			case 'project.save': break;
+			case 'export.open': ui.showExportDialog = true; break;
+			case 'project.new': handleNewProject(); break;
+			case 'preview.fullscreen':
+				ui.previewFullscreen = !ui.previewFullscreen;
+				break;
+			case 'audio.toggleMute': break;
+			case 'import.open': openFileDialog(); break;
+			case 'timeline.group':
+				if (selection.selectedClipIds.size >= 2) {
+					commands.execute(new GroupClipsCommand(timeline, selection.selectedClipIds));
+				}
+				break;
+			case 'timeline.ungroup':
+				for (const clipId of selection.selectedClipIds) {
+					const clip = timeline.getClipById(clipId);
+					if (clip?.groupId) {
+						commands.execute(new UngroupClipsCommand(timeline, clip.groupId));
+						break;
+					}
+				}
+				break;
+			case 'timeline.removeGaps':
+				commands.execute(new RemoveGapsCommand(timeline));
+				break;
+			case 'panels.toggleSidebar':
+				ui.sidebarCollapsed = !ui.sidebarCollapsed;
+				break;
+			case 'panels.toggleTimeline':
+				ui.timelineCollapsed = !ui.timelineCollapsed;
+				break;
+			case 'panels.toggleAll':
+				ui.sidebarCollapsed = !ui.sidebarCollapsed;
+				ui.timelineCollapsed = !ui.timelineCollapsed;
+				break;
 		}
 	}
 
@@ -238,7 +339,7 @@
 
 	<EditorLayout>
 		{#snippet topbar()}
-			<TopBar onimport={openFileDialog} onnewproject={handleNewProject} />
+			<TopBar onimport={openFileDialog} onnewproject={handleNewProject} onshortcuts={() => showShortcuts = true} />
 		{/snippet}
 
 		{#snippet mediaBrowser()}
@@ -265,6 +366,11 @@
 			<ExportDialog ffmpegReady={ffmpeg.ready} onexport={handleExport} />
 		{/snippet}
 	</EditorLayout>
+
+	<ShortcutsModal bind:open={showShortcuts} />
+	<CaptionDialog />
+	<SilenceRemovalDialog />
+	<VoiceoverDialog />
 {/if}
 
 <style>

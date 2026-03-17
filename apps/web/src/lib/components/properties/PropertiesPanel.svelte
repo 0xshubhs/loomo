@@ -3,6 +3,7 @@
 	import ClipProperties from './ClipProperties.svelte';
 	import TransitionPicker from './TransitionPicker.svelte';
 	import TextEditor from './TextEditor.svelte';
+	import ShapeProperties from './ShapeProperties.svelte';
 	import AudioMixer from './AudioMixer.svelte';
 
 	const selection = getSelection();
@@ -23,6 +24,11 @@
 		if (!selection.selectedTextId) return null;
 		return timeline.textOverlays.find(t => t.id === selection.selectedTextId) ?? null;
 	});
+
+	let selectedShape = $derived.by(() => {
+		if (!selection.selectedShapeId) return null;
+		return timeline.shapeOverlays.find(s => s.id === selection.selectedShapeId) ?? null;
+	});
 </script>
 
 <div class="properties-panel">
@@ -37,9 +43,11 @@
 			<TransitionPicker transition={selectedTransition} />
 		{:else if selectedText}
 			<TextEditor overlay={selectedText} />
+		{:else if selectedShape}
+			<ShapeProperties overlay={selectedShape} />
 		{:else}
 			<div class="no-selection">
-				<p>Select a clip, transition, or text overlay to edit its properties</p>
+				<p>Select a clip, transition, text, or shape overlay to edit its properties</p>
 			</div>
 		{/if}
 

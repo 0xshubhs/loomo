@@ -182,6 +182,13 @@ export class PlaybackEngine {
 		video.volume = this._computeVolume(clip, tracks);
 	}
 
+	/** Set playback speed on the currently active video element. */
+	setPlaybackSpeed(speed: number): void {
+		if (!this._activeAssetId) return;
+		const video = this.videoElements.get(this._activeAssetId);
+		if (video) video.playbackRate = speed;
+	}
+
 	pauseAll(): void {
 		this._playing = false;
 		this._activeClipId = null;

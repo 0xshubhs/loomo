@@ -40,4 +40,12 @@ export class PlaybackStore {
 	setRate(rate: number): void {
 		this.playbackRate = rate;
 	}
+
+	stepForward(fps: number): void {
+		this.seek(this.currentTime + 1 / fps);
+	}
+
+	stepBackward(fps: number): void {
+		this.seek(this.currentTime - 1 / fps);
+	}
 }

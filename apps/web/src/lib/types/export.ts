@@ -1,4 +1,4 @@
-export type ExportFormat = 'mp4' | 'webm' | 'mkv' | 'avi' | 'mov';
+export type ExportFormat = 'mp4' | 'webm' | 'mkv' | 'avi' | 'mov' | 'gif' | 'm4a';
 export type VideoCodec = 'libx264' | 'libx265' | 'libvpx-vp9' | 'libvpx';
 export type AudioCodec = 'aac' | 'libopus' | 'libvorbis' | 'mp3';
 export type Resolution = '4k' | '1080p' | '720p' | '480p' | 'custom';
@@ -40,4 +40,6 @@ export const FORMAT_DEFAULTS: Record<ExportFormat, { videoCodec: VideoCodec; aud
 	mkv: { videoCodec: 'libx264', audioCodec: 'aac' },
 	avi: { videoCodec: 'libx264', audioCodec: 'mp3' },
 	mov: { videoCodec: 'libx264', audioCodec: 'aac' },
+	gif: { videoCodec: 'libx264', audioCodec: 'aac' }, // special handling in pipeline
+	m4a: { videoCodec: 'libx264', audioCodec: 'aac' }, // audio-only
 };

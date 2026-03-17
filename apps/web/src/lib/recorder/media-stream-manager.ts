@@ -46,6 +46,19 @@ export class MediaStreamManager {
     return this.micStream;
   }
 
+  async requestAudioOnly(deviceId: string | null): Promise<MediaStream> {
+    this.micStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        deviceId: deviceId ? { exact: deviceId } : undefined,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        sampleRate: 48000,
+      },
+    });
+    return this.micStream;
+  }
+
   getScreenStream() { return this.screenStream; }
   getCameraStream() { return this.cameraStream; }
   getMicStream() { return this.micStream; }

@@ -20,6 +20,23 @@
 	let showControls = $state(true);
 	let controlsTimer: ReturnType<typeof setTimeout> | null = null;
 
+	const SPEED_OPTIONS = [1, 1.25, 1.5, 2];
+	let speedIndex = $state(0);
+	let playbackRate = $derived(SPEED_OPTIONS[speedIndex]);
+	let showSpeedMenu = $state(false);
+
+	function cycleSpeed() {
+		speedIndex = (speedIndex + 1) % SPEED_OPTIONS.length;
+		if (videoEl) videoEl.playbackRate = playbackRate;
+	}
+
+	function setSpeed(rate: number) {
+		speedIndex = SPEED_OPTIONS.indexOf(rate);
+		if (speedIndex === -1) speedIndex = 0;
+		if (videoEl) videoEl.playbackRate = SPEED_OPTIONS[speedIndex];
+		showSpeedMenu = false;
+	}
+
 	// Determine which source mode we're using:
 	// - 'hls' when an HLS URL is available
 	// - 'fallback' when only the raw source video is available
@@ -48,6 +65,7 @@
 		destroyHls();
 		if (!videoEl) return;
 		videoEl.src = url;
+		videoEl.playbackRate = playbackRate;
 	}
 
 	async function loadHlsSource(url: string) {
@@ -72,6 +90,7 @@
 			hls.loadSource(url);
 			hls.attachMedia(videoEl);
 			hlsInstance = hls;
+			videoEl.playbackRate = playbackRate;
 		} catch {
 			// If hls.js import fails, try direct
 			if (videoEl) videoEl.src = url;
@@ -241,6 +260,32 @@
 			</div>
 
 			<div class="controls-right">
+				<div class="speed-control">
+					<button
+						class="ctrl-btn speed-btn"
+						onclick={cycleSpeed}
+						oncontextmenu={(e) => { e.preventDefault(); showSpeedMenu = !showSpeedMenu; }}
+						aria-label="Playback speed {playbackRate}x"
+						title="Click to cycle, right-click for menu"
+					>
+						{playbackRate === 1 ? '1x' : `${playbackRate}x`}
+					</button>
+					{#if showSpeedMenu}
+						<!-- svelte-ignore a11y_no_static_element_interactions -->
+						<div class="speed-backdrop" onclick={() => showSpeedMenu = false} onkeydown={() => {}}></div>
+						<div class="speed-menu">
+							{#each SPEED_OPTIONS as rate}
+								<button
+									class="speed-option"
+									class:active={playbackRate === rate}
+									onclick={() => setSpeed(rate)}
+								>
+									{rate}x
+								</button>
+							{/each}
+						</div>
+					{/if}
+				</div>
 				<button class="ctrl-btn" onclick={toggleFullscreen} aria-label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}>
 					<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
 						{#if isFullscreen}
@@ -425,5 +470,55 @@
 		color: rgba(255, 255, 255, 0.8);
 		font-family: var(--font-mono);
 		white-space: nowrap;
+	}
+	.speed-control {
+		position: relative;
+	}
+	.speed-btn {
+		width: auto !important;
+		padding: 0 8px;
+		font-size: 12px;
+		font-weight: 600;
+		font-family: var(--font-mono);
+		letter-spacing: -0.02em;
+	}
+	.speed-backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 99;
+	}
+	.speed-menu {
+		position: absolute;
+		bottom: calc(100% + 8px);
+		right: 0;
+		z-index: 100;
+		background: rgba(24, 24, 28, 0.95);
+		border: 1px solid rgba(255, 255, 255, 0.1);
+		border-radius: 8px;
+		padding: 4px;
+		backdrop-filter: blur(20px);
+		box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+	}
+	.speed-option {
+		display: block;
+		width: 100%;
+		padding: 6px 16px;
+		background: transparent;
+		border: none;
+		border-radius: 4px;
+		color: rgba(255, 255, 255, 0.7);
+		font-size: 13px;
+		font-weight: 500;
+		cursor: pointer;
+		text-align: center;
+		white-space: nowrap;
+	}
+	.speed-option:hover {
+		background: rgba(255, 255, 255, 0.1);
+		color: white;
+	}
+	.speed-option.active {
+		color: white;
+		background: rgba(99, 102, 241, 0.3);
 	}
 </style>

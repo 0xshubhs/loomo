@@ -1,6 +1,7 @@
 import type { Command } from './base-command.js';
-import type { Clip } from '$lib/types/index.js';
+import type { Clip, ClipFilters, ClipTransform, ClipCrop, ChromaKey, ClipPosition } from '$lib/types/index.js';
 import type { TimelineStore } from '$lib/state/timeline.svelte.js';
+import type { SilenceRegion } from '$lib/engine/silence-detector.js';
 import { generateId } from '$lib/utils/id.js';
 
 export class AddClipCommand implements Command {
@@ -225,6 +226,455 @@ export class TrimClipCommand implements Command {
 		clip.duration = this.previousDuration;
 		clip.sourceStart = this.previousSourceStart;
 		clip.sourceEnd = this.previousSourceEnd;
+		this.timeline.tracks = [...this.timeline.tracks];
+	}
+}
+
+export class SetClipFiltersCommand implements Command {
+	readonly type = 'set-clip-filters';
+	readonly description: string;
+	private previousFilters: ClipFilters | null = null;
+	private previousPreset: string | null = null;
+
+	constructor(
+		private timeline: TimelineStore,
+		private clipId: string,
+		private newFilters: ClipFilters,
+		private newPreset: string | null
+	) {
+		this.description = newPreset ? `Apply "${newPreset}" filter preset` : 'Update clip filters';
+	}
+
+	execute(): void {
+		const clip = this.timeline.getClipById(this.clipId);
+		if (!clip) throw new Error(`Clip ${this.clipId} not found`);
+		this.previousFilters = { ...clip.filters };
+		this.previousPreset = clip.filterPreset;
+		clip.filters = { ...this.newFilters };
+		clip.filterPreset = this.newPreset;
+		this.timeline.tracks = [...this.timeline.tracks];
+	}
+
+	undo(): void {
+		const clip = this.timeline.getClipById(this.clipId);
+		if (!clip || !this.previousFilters) return;
+		clip.filters = { ...this.previousFilters };
+		clip.filterPreset = this.previousPreset;
+		this.timeline.tracks = [...this.timeline.tracks];
+	}
+}
+
+export class SetClipTransformCommand implements Command {
+	readonly type = 'set-clip-transform';
+	readonly description: string;
+	private previousTransform: ClipTransform | null = null;
+
+	constructor(
+		private timeline: TimelineStore,
+		private clipId: string,
+		private newTransform: ClipTransform
+	) {
+		this.description = 'Update clip transform';
+	}
+
+	execute(): void {
+		const clip = this.timeline.getClipById(this.clipId);
+		if (!clip) throw new Error(`Clip ${this.clipId} not found`);
+		this.previousTransform = { ...clip.transform };
+		clip.transform = { ...this.newTransform };
+		this.timeline.tracks = [...this.timeline.tracks];
+	}
+
+	undo(): void {
+		const clip = this.timeline.getClipById(this.clipId);
+		if (!clip || !this.previousTransform) return;
+		clip.transform = { ...this.previousTransform };
+		this.timeline.tracks = [...this.timeline.tracks];
+	}
+}
+
+export class SetClipCropCommand implements Command {
+	readonly type = 'set-clip-crop';
+	readonly description: string;
+	private previousCrop: ClipCrop | null = null;
+
+	constructor(
+		private timeline: TimelineStore,
+		private clipId: string,
+		private newCrop: ClipCrop
+	) {
+		this.description = 'Update clip crop';
+	}
+
+	execute(): void {
+		const clip = this.timeline.getClipById(this.clipId);
+		if (!clip) throw new Error(`Clip ${this.clipId} not found`);
+		this.previousCrop = { ...clip.crop };
+		clip.crop = { ...this.newCrop };
+		this.timeline.tracks = [...this.timeline.tracks];
+	}
+
+	undo(): void {
+		const clip = this.timeline.getClipById(this.clipId);
+		if (!clip || !this.previousCrop) return;
+		clip.crop = { ...this.previousCrop };
+		this.timeline.tracks = [...this.timeline.tracks];
+	}
+}
+
+export class SetClipReversedCommand implements Command {
+	readonly type = 'set-clip-reversed';
+	readonly description: string;
+	private previousReversed: boolean = false;
+
+	constructor(
+		private timeline: TimelineStore,
+		private clipId: string,
+		private newReversed: boolean
+	) {
+		this.description = newReversed ? 'Reverse clip' : 'Un-reverse clip';
+	}
+
+	execute(): void {
+		const clip = this.timeline.getClipById(this.clipId);
+		if (!clip) throw new Error(`Clip ${this.clipId} not found`);
+		this.previousReversed = clip.reversed;
+		clip.reversed = this.newReversed;
+		this.timeline.tracks = [...this.timeline.tracks];
+	}
+
+	undo(): void {
+		const clip = this.timeline.getClipById(this.clipId);
+		if (!clip) return;
+		clip.reversed = this.previousReversed;
+		this.timeline.tracks = [...this.timeline.tracks];
+	}
+}
+
+export class SetChromaKeyCommand implements Command {
+	readonly type = 'set-chroma-key';
+	readonly description: string;
+	private previousChromaKey: ChromaKey | null = null;
+
+	constructor(
+		private timeline: TimelineStore,
+		private clipId: string,
+		private newChromaKey: ChromaKey
+	) {
+		this.description = newChromaKey.enabled ? 'Enable chroma key' : 'Update chroma key';
+	}
+
+	execute(): void {
+		const clip = this.timeline.getClipById(this.clipId);
+		if (!clip) throw new Error(`Clip ${this.clipId} not found`);
+		this.previousChromaKey = { ...clip.chromaKey };
+		clip.chromaKey = { ...this.newChromaKey };
+		this.timeline.tracks = [...this.timeline.tracks];
+	}
+
+	undo(): void {
+		const clip = this.timeline.getClipById(this.clipId);
+		if (!clip || !this.previousChromaKey) return;
+		clip.chromaKey = { ...this.previousChromaKey };
+		this.timeline.tracks = [...this.timeline.tracks];
+	}
+}
+
+export class PasteClipsCommand implements Command {
+	readonly type = 'paste-clips';
+	readonly description = 'Paste clips';
+	private pastedClipIds: string[] = [];
+
+	constructor(
+		private timeline: TimelineStore,
+		private clipsToPaste: Clip[],
+		private playheadTime: number
+	) {}
+
+	execute(): void {
+		if (this.clipsToPaste.length === 0) return;
+
+		// Find the earliest start time among the copied clips to compute offsets
+		const minStart = Math.min(...this.clipsToPaste.map((c) => c.timelineStart));
+		this.pastedClipIds = [];
+
+		for (const clip of this.clipsToPaste) {
+			const newId = generateId();
+			const offset = clip.timelineStart - minStart;
+			const newClip: Clip = {
+				...structuredClone(clip),
+				id: newId,
+				timelineStart: this.playheadTime + offset,
+			};
+
+			// Find the target track (same track if it exists, otherwise first track of matching type)
+			let track = this.timeline.getTrackById(clip.trackId);
+			if (!track) {
+				track = this.timeline.tracks.find((t) => t.type === (clip.type === 'audio' ? 'audio' : 'video'));
+			}
+			if (!track) {
+				track = this.timeline.tracks[0];
+			}
+			if (!track) continue;
+
+			newClip.trackId = track.id;
+			track.clips.push(newClip);
+			this.pastedClipIds.push(newId);
+		}
+
+		this.timeline.tracks = [...this.timeline.tracks];
+	}
+
+	undo(): void {
+		for (const track of this.timeline.tracks) {
+			track.clips = track.clips.filter((c) => !this.pastedClipIds.includes(c.id));
+		}
+		this.timeline.tracks = [...this.timeline.tracks];
+	}
+
+	getPastedIds(): string[] {
+		return this.pastedClipIds;
+	}
+}
+
+export class DuplicateClipsCommand implements Command {
+	readonly type = 'duplicate-clips';
+	readonly description = 'Duplicate clips';
+	private duplicatedClipIds: string[] = [];
+
+	constructor(
+		private timeline: TimelineStore,
+		private clipIds: string[]
+	) {}
+
+	execute(): void {
+		this.duplicatedClipIds = [];
+
+		for (const clipId of this.clipIds) {
+			const clip = this.timeline.getClipById(clipId);
+			if (!clip) continue;
+
+			const track = this.timeline.getClipTrack(clipId);
+			if (!track) continue;
+
+			const newId = generateId();
+			const newClip: Clip = {
+				...structuredClone(clip),
+				id: newId,
+				timelineStart: clip.timelineStart + clip.duration,
+			};
+
+			track.clips.push(newClip);
+			this.duplicatedClipIds.push(newId);
+		}
+
+		this.timeline.tracks = [...this.timeline.tracks];
+	}
+
+	undo(): void {
+		for (const track of this.timeline.tracks) {
+			track.clips = track.clips.filter((c) => !this.duplicatedClipIds.includes(c.id));
+		}
+		this.timeline.tracks = [...this.timeline.tracks];
+	}
+
+	getDuplicatedIds(): string[] {
+		return this.duplicatedClipIds;
+	}
+}
+
+export class SetClipPositionCommand implements Command {
+	readonly type = 'set-clip-position';
+	readonly description: string;
+	private previousPosition: ClipPosition | null = null;
+
+	constructor(
+		private timeline: TimelineStore,
+		private clipId: string,
+		private newPosition: ClipPosition
+	) {
+		this.description = 'Update clip position';
+	}
+
+	execute(): void {
+		const clip = this.timeline.getClipById(this.clipId);
+		if (!clip) throw new Error(`Clip ${this.clipId} not found`);
+		this.previousPosition = { ...clip.position };
+		clip.position = { ...this.newPosition };
+		this.timeline.tracks = [...this.timeline.tracks];
+	}
+
+	undo(): void {
+		const clip = this.timeline.getClipById(this.clipId);
+		if (!clip || !this.previousPosition) return;
+		clip.position = { ...this.previousPosition };
+		this.timeline.tracks = [...this.timeline.tracks];
+	}
+}
+
+export class SetVideoEffectCommand implements Command {
+	readonly type = 'set-video-effect';
+	readonly description: string;
+	private previousEffect: { type: string; intensity: number } | null = null;
+
+	constructor(
+		private timeline: TimelineStore,
+		private clipId: string,
+		private newEffect: { type: string; intensity: number }
+	) {
+		this.description = `Set effect: ${newEffect.type}`;
+	}
+
+	execute(): void {
+		const clip = this.timeline.getClipById(this.clipId);
+		if (!clip) throw new Error(`Clip ${this.clipId} not found`);
+		this.previousEffect = clip.videoEffect ? { ...clip.videoEffect } : { type: 'none', intensity: 50 };
+		clip.videoEffect = { ...this.newEffect };
+		this.timeline.tracks = [...this.timeline.tracks];
+	}
+
+	undo(): void {
+		const clip = this.timeline.getClipById(this.clipId);
+		if (!clip || !this.previousEffect) return;
+		clip.videoEffect = { ...this.previousEffect };
+		this.timeline.tracks = [...this.timeline.tracks];
+	}
+}
+
+export class RemoveGapsCommand implements Command {
+	readonly type = 'remove-gaps';
+	readonly description = 'Remove gaps';
+	private previousStarts: Map<string, number> = new Map();
+
+	constructor(
+		private timeline: TimelineStore,
+		private trackId?: string
+	) {}
+
+	execute(): void {
+		this.previousStarts.clear();
+		// Save all clip starts
+		for (const track of this.timeline.tracks) {
+			for (const clip of track.clips) {
+				this.previousStarts.set(clip.id, clip.timelineStart);
+			}
+		}
+		if (this.trackId) {
+			this.timeline.removeGapsOnTrack(this.trackId);
+		} else {
+			this.timeline.removeAllGaps();
+		}
+	}
+
+	undo(): void {
+		for (const track of this.timeline.tracks) {
+			for (const clip of track.clips) {
+				const prev = this.previousStarts.get(clip.id);
+				if (prev !== undefined) {
+					clip.timelineStart = prev;
+				}
+			}
+		}
+		this.timeline.tracks = [...this.timeline.tracks];
+	}
+}
+
+export class RemoveSilencesCommand implements Command {
+	readonly type = 'remove-silences';
+	readonly description = 'Remove silences';
+	private originalClip: Clip | null = null;
+	private trackId: string = '';
+	private originalIndex: number = -1;
+	private resultClipIds: string[] = [];
+
+	constructor(
+		private timeline: TimelineStore,
+		private clipId: string,
+		private silences: SilenceRegion[],
+	) {}
+
+	execute(): void {
+		const track = this.timeline.getClipTrack(this.clipId);
+		if (!track) throw new Error(`Clip ${this.clipId} not found`);
+
+		this.trackId = track.id;
+		const clipIndex = track.clips.findIndex((c) => c.id === this.clipId);
+		this.originalIndex = clipIndex;
+		const clip = track.clips[clipIndex];
+		this.originalClip = { ...clip };
+
+		// Sort silences by start time
+		const sorted = [...this.silences].sort((a, b) => a.startTime - b.startTime);
+
+		// Build kept regions (inverse of silences, relative to clip source)
+		const clipSourceStart = clip.sourceStart;
+		const clipSourceEnd = clip.sourceEnd;
+		const kept: { srcStart: number; srcEnd: number }[] = [];
+		let cursor = clipSourceStart;
+
+		for (const silence of sorted) {
+			// Convert silence times from audio-absolute to source-relative
+			const silStart = clip.sourceStart + silence.startTime;
+			const silEnd = clip.sourceStart + silence.endTime;
+
+			// Clamp to clip boundaries
+			const effectiveStart = Math.max(silStart, cursor);
+			const effectiveEnd = Math.min(silEnd, clipSourceEnd);
+
+			if (effectiveStart > cursor) {
+				kept.push({ srcStart: cursor, srcEnd: effectiveStart });
+			}
+			cursor = Math.max(cursor, effectiveEnd);
+		}
+
+		if (cursor < clipSourceEnd) {
+			kept.push({ srcStart: cursor, srcEnd: clipSourceEnd });
+		}
+
+		if (kept.length === 0) {
+			// Everything is silence - just remove the clip
+			track.clips.splice(clipIndex, 1);
+			this.timeline.tracks = [...this.timeline.tracks];
+			return;
+		}
+
+		// Create new clips for kept regions, closing gaps
+		const newClips: Clip[] = [];
+		let timelinePos = clip.timelineStart;
+
+		for (const region of kept) {
+			const duration = region.srcEnd - region.srcStart;
+			if (duration <= 0.01) continue; // Skip tiny fragments
+
+			const newClip: Clip = {
+				...clip,
+				id: generateId(),
+				timelineStart: timelinePos,
+				duration,
+				sourceStart: region.srcStart,
+				sourceEnd: region.srcEnd,
+			};
+			newClips.push(newClip);
+			this.resultClipIds.push(newClip.id);
+			timelinePos += duration;
+		}
+
+		// Replace original clip with new clips
+		track.clips.splice(clipIndex, 1, ...newClips);
+		this.timeline.tracks = [...this.timeline.tracks];
+	}
+
+	undo(): void {
+		if (!this.originalClip) return;
+		const track = this.timeline.getTrackById(this.trackId);
+		if (!track) return;
+
+		// Remove all result clips
+		track.clips = track.clips.filter((c) => !this.resultClipIds.includes(c.id));
+
+		// Re-insert the original clip at the original index
+		const insertIdx = Math.min(this.originalIndex, track.clips.length);
+		track.clips.splice(insertIdx, 0, { ...this.originalClip });
 		this.timeline.tracks = [...this.timeline.tracks];
 	}
 }

@@ -1,5 +1,6 @@
 <script lang="ts">
-	import type { Transition, TransitionType } from '$lib/types/index.js';
+	import type { Transition, TransitionType, TransitionCategory } from '$lib/types/index.js';
+	import { TRANSITION_LIST, TRANSITION_CATEGORIES } from '$lib/types/effects.js';
 	import { getTimeline, getCommands } from '$lib/state/context.js';
 	import { UpdateTransitionCommand, RemoveTransitionCommand } from '$lib/commands/transition-commands.js';
 	import Slider from '../shared/Slider.svelte';
@@ -14,19 +15,13 @@
 	const timeline = getTimeline();
 	const commands = getCommands();
 
-	const transitionTypes: { value: TransitionType; label: string }[] = [
-		{ value: 'fade', label: 'Fade' },
-		{ value: 'dissolve', label: 'Dissolve' },
-		{ value: 'wipe-left', label: 'Wipe Left' },
-		{ value: 'wipe-right', label: 'Wipe Right' },
-		{ value: 'wipe-up', label: 'Wipe Up' },
-		{ value: 'wipe-down', label: 'Wipe Down' },
-		{ value: 'slide-left', label: 'Slide Left' },
-		{ value: 'slide-right', label: 'Slide Right' },
-		{ value: 'zoom-in', label: 'Zoom In' },
-		{ value: 'zoom-out', label: 'Zoom Out' },
-		{ value: 'blur', label: 'Blur' },
-	];
+	let activeCategory = $state<TransitionCategory | 'all'>('all');
+
+	let filteredTransitions = $derived(
+		activeCategory === 'all'
+			? TRANSITION_LIST
+			: TRANSITION_LIST.filter((t) => t.category === activeCategory)
+	);
 
 	function setType(type: TransitionType) {
 		commands.execute(new UpdateTransitionCommand(timeline, transition.id, type));
@@ -44,12 +39,19 @@
 <div class="transition-picker">
 	<h4>Transition</h4>
 
+	<div class="category-tabs">
+		<button class="cat-tab" class:active={activeCategory === 'all'} onclick={() => activeCategory = 'all'}>All</button>
+		{#each TRANSITION_CATEGORIES as cat}
+			<button class="cat-tab" class:active={activeCategory === cat.id} onclick={() => activeCategory = cat.id}>{cat.label}</button>
+		{/each}
+	</div>
+
 	<div class="type-grid">
-		{#each transitionTypes as t}
+		{#each filteredTransitions as t}
 			<button
 				class="type-btn"
-				class:active={transition.type === t.value}
-				onclick={() => setType(t.value)}
+				class:active={transition.type === t.type}
+				onclick={() => setType(t.type)}
 			>
 				{t.label}
 			</button>
@@ -78,11 +80,44 @@
 		margin-bottom: 8px;
 	}
 
+	.category-tabs {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 2px;
+		margin-bottom: 8px;
+	}
+
+	.cat-tab {
+		padding: 3px 8px;
+		font-size: 9px;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.3px;
+		background: transparent;
+		border: 1px solid var(--border-primary);
+		border-radius: 3px;
+		color: var(--text-tertiary);
+		cursor: pointer;
+		transition: all 0.12s ease;
+	}
+
+	.cat-tab:hover {
+		color: var(--text-secondary);
+	}
+
+	.cat-tab.active {
+		background: var(--bg-active);
+		border-color: var(--accent);
+		color: var(--text-primary);
+	}
+
 	.type-grid {
 		display: grid;
 		grid-template-columns: 1fr 1fr;
 		gap: 4px;
 		margin-bottom: 12px;
+		max-height: 200px;
+		overflow-y: auto;
 	}
 
 	.type-btn {
