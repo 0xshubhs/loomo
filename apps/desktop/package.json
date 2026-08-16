@@ -1,0 +1,18 @@
+{
+	"name": "@dittoo/desktop",
+	"private": true,
+	"version": "0.1.0",
+	"type": "module",
+	"scripts": {
+		"dev": "tauri dev",
+		"build": "tauri build",
+		"build:debug": "tauri build --debug",
+		"icon": "node scripts/make-icon.mjs && tauri icon src-tauri/icons/source.png",
+		"ffmpeg": "node scripts/fetch-ffmpeg.mjs",
+		"ffmpeg:all": "node scripts/fetch-ffmpeg.mjs --all",
+		"tauri": "tauri"
+	},
+	"devDependencies": {
+		"@tauri-apps/cli": "^2"
+	}
+}

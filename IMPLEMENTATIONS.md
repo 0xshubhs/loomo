@@ -314,6 +314,95 @@ make clean        Stop containers, remove build artifacts
 
 ---
 
+## Animation & Advanced Effects
+
+VN-parity editing features. Everything here renders in the preview *and* in the
+export — the two are separate renderers, so each feature is implemented twice
+and cross-checked by tests.
+
+| Feature | Data | Preview | Export |
+|---------|------|---------|--------|
+| **Keyframes** | `Clip.keyframes: KeyframeTrack[]` | `utils/keyframe-css.ts` | `engine/ffmpeg-keyframes.ts` + `engine/keyframe-graph.ts` |
+| **Speed curves** | `Clip.speedCurve` | curve graph in the panel | piecewise `setpts` |
+| **Mosaic** | `Clip.mosaics: MosaicRegion[]` | region list | `split`/`crop`/`overlay` subgraph |
+| **Denoise** | `Clip.denoiseStrength` | — | `afftdn` |
+| **Motion FX** | `Clip.videoEffect` | `utils/video-effects.ts` | `engine/ffmpeg-filters.ts` |
+
+### Keyframes
+
+Nine animatable properties (position X/Y, scale, rotation, opacity, volume,
+brightness, contrast, saturation) with five easings. Times are relative to the
+clip, which is also what FFmpeg's `t` means after `trim` + `setpts=PTS-STARTPTS`.
+
+Each property compiles to whatever FFmpeg can actually evaluate per frame:
+
+- **geometry** → `scale=…:eval=frame` plus an `overlay` onto a `color` canvas
+- **colour** → `eq=…:eval=frame`
+- **volume** → `volume=…:eval=frame`
+- **opacity** → no expression-capable filter exists, so a `sendcmd` script is
+  generated at the export frame rate and replayed against `colorchannelmixer@kf`
+
+Curves become nested `if(lt(t,…),…)` expressions, always single-quoted —
+FFmpeg reads an unquoted comma as a filter separator and the graph fails.
+
+### Verification
+
+The compiler is the riskiest code here, so it is checked two ways: a miniature
+FFmpeg-expression evaluator asserts the emitted expression means the same thing
+as the TypeScript evaluator, and integration tests run the actual binary. There
+is also a full export test that builds a real MP4 and probes it with ffprobe.
+
+Run with `bun run test` in `apps/web` — the FFmpeg-backed tests skip
+automatically when no binary is present.
+
+### Bugs this work fixed
+
+- **Motion FX never exported.** `videoEffect` was absent from
+  `export-pipeline.ts` *and* from the `hasEffects` check, so an affected clip
+  took the stream-copy path and came out untouched.
+- **Motion FX transforms never previewed.** `applyVideoTransforms` ran after
+  `applyVideoFilters` and overwrote `style.transform` outright.
+- **A failed resolution probe silently skipped scaling**, handing back the
+  source resolution instead of the requested one.
+- **Clips were built from three drifting object literals** rather than a
+  factory, which is how two of them lost `videoEffect`. Now `createClip()`.
+
+---
+
+## Desktop App — `apps/desktop/`
+
+Tauri 2 shell that ships the same SvelteKit frontend as an installable native
+app, with the real FFmpeg binary behind it. Full detail in
+[`apps/desktop/README.md`](apps/desktop/README.md).
+
+### Rust commands
+
+| Module | Purpose |
+|--------|---------|
+| `src/scratch.rs` | Real-disk stand-in for ffmpeg.wasm's MEMFS. Maps the editor's bare virtual filenames onto a scratch dir, with traversal-proof path resolution. Binary transfers use raw IPC bodies rather than JSON. |
+| `src/ffmpeg.rs` | Spawns the ffmpeg sidecar with cwd set to scratch, so existing argv works untouched. Streams progress over a `Channel`, parses `-progress pipe:1`, supports cancel, and returns ffmpeg's stderr on failure. Also wraps ffprobe. |
+| `src/capture.rs` | Screen capture via x11grab / avfoundation / gdigrab. Stops with `q` on stdin so the MP4 index is written. Reports capability so the UI can fall back. |
+| `src/projects.rs` | Offline project library under the OS app-data dir, with atomic saves and a per-project media vault. |
+
+### The engine seam
+
+`FFmpegEngine` (`apps/web/src/lib/engine/ffmpeg-engine.ts`) is the interface both
+backends implement — `FFmpegBridge` (wasm, web) and `NativeFFmpegEngine`
+(binary, desktop). `createFFmpegEngine()` picks by detecting Tauri. The export
+pipeline, media import and recorder were not otherwise changed: they had always
+been written against ffmpeg.wasm's virtual-filename API, and the native side
+reproduces exactly that.
+
+### Build
+
+`svelte.config.js` swaps `adapter-node` for `adapter-static` when
+`LOOMO_DESKTOP=1`. `make desktop-build` produces the host platform's installers;
+`.github/workflows/desktop-release.yml` fans out across ubuntu/macos/windows
+runners to produce `.deb`/`.rpm`/`.AppImage`, `.dmg`, and `.exe`/`.msi` from one
+tag — required because Apple and MSVC toolchains cannot cross-compile.
+
+---
+
 ## Key Technical Decisions
 
 - **No auth required for local dev** — auth guard removed from app layout

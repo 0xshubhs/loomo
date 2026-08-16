@@ -11,14 +11,8 @@
 		type TTSOptions,
 	} from '$lib/engine/text-to-speech.js';
 	import { generateId } from '$lib/utils/id.js';
-	import {
-		DEFAULT_CLIP_FILTERS,
-		DEFAULT_TRANSFORM,
-		DEFAULT_CROP,
-		DEFAULT_CHROMA_KEY,
-		DEFAULT_CLIP_POSITION,
-	} from '$lib/types/index.js';
 	import type { Clip } from '$lib/types/index.js';
+	import { createClip } from '$lib/types/timeline.js';
 	import { onMount } from 'svelte';
 	import Modal from './Modal.svelte';
 	import Button from './Button.svelte';
@@ -156,7 +150,7 @@
 
 			// Create the audio clip
 			const clipId = generateId();
-			const clip: Clip = {
+			const clip: Clip = createClip({
 				id: clipId,
 				name: 'Voiceover',
 				type: 'audio',
@@ -164,24 +158,7 @@
 				trackId: audioTrack.id,
 				timelineStart: playback.currentTime,
 				duration,
-				sourceStart: 0,
-				sourceEnd: duration,
-				volume: 1,
-				muted: false,
-				speed: 1,
-				opacity: 1,
-				filters: { ...DEFAULT_CLIP_FILTERS },
-				filterPreset: null,
-				transform: { ...DEFAULT_TRANSFORM },
-				crop: { ...DEFAULT_CROP },
-				fadeIn: 0,
-				fadeOut: 0,
-				noiseSuppression: false,
-				chromaKey: { ...DEFAULT_CHROMA_KEY },
-				reversed: false,
-				position: { ...DEFAULT_CLIP_POSITION },
-				groupId: null,
-			};
+			});
 
 			audioTrack.clips.push(clip);
 			timeline.tracks = [...timeline.tracks];

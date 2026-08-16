@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- macOS refuses the capture APIs outright unless the reason strings are
+	     present; the text here is what the permission prompt shows. -->
+	<key>NSCameraUsageDescription</key>
+	<string>Loomo uses your camera to record the camera bubble in your videos.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Loomo uses your microphone to record narration in your videos.</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>Loomo records your screen to create screen recordings.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Loomo saves exported videos to folders you choose.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Loomo saves exported videos to folders you choose.</string>
+</dict>
+</plist>

@@ -4,6 +4,7 @@
 	let {
 		isPaused,
 		elapsedTime,
+		canPause = true,
 		onpause,
 		onresume,
 		onstop,
@@ -11,6 +12,8 @@
 	}: {
 		isPaused: boolean;
 		elapsedTime: string;
+		/** False for native ffmpeg capture, which cannot pause mid-recording. */
+		canPause?: boolean;
 		onpause: () => void;
 		onresume: () => void;
 		onstop: () => void;
@@ -38,29 +41,32 @@
 
 	<div class="divider"></div>
 
-	<!-- Pause/Resume -->
-	<div class="btn-wrapper">
-		<button
-			class="ctrl-btn"
-			onclick={isPaused ? onresume : onpause}
-			onmouseenter={() => hoveredBtn = 'pause'}
-			onmouseleave={() => hoveredBtn = null}
-		>
-			{#if isPaused}
-				<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-					<polygon points="6,3 20,12 6,21"/>
-				</svg>
-			{:else}
-				<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-					<rect x="6" y="4" width="4" height="16" rx="1"/>
-					<rect x="14" y="4" width="4" height="16" rx="1"/>
-				</svg>
+	<!-- Pause/Resume — hidden entirely when the backend can't pause, rather
+	     than shown disabled, so the control bar stays uncluttered. -->
+	{#if canPause}
+		<div class="btn-wrapper">
+			<button
+				class="ctrl-btn"
+				onclick={isPaused ? onresume : onpause}
+				onmouseenter={() => hoveredBtn = 'pause'}
+				onmouseleave={() => hoveredBtn = null}
+			>
+				{#if isPaused}
+					<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+						<polygon points="6,3 20,12 6,21"/>
+					</svg>
+				{:else}
+					<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+						<rect x="6" y="4" width="4" height="16" rx="1"/>
+						<rect x="14" y="4" width="4" height="16" rx="1"/>
+					</svg>
+				{/if}
+			</button>
+			{#if hoveredBtn === 'pause'}
+				<div class="tooltip">{isPaused ? 'Resume' : 'Pause'}</div>
 			{/if}
-		</button>
-		{#if hoveredBtn === 'pause'}
-			<div class="tooltip">{isPaused ? 'Resume' : 'Pause'}</div>
-		{/if}
-	</div>
+		</div>
+	{/if}
 
 	<!-- Stop -->
 	<div class="btn-wrapper">

@@ -4,6 +4,7 @@
 	import { AddTrackCommand } from '$lib/commands/track-commands.js';
 	import { getMediaLibrary } from '$lib/state/context.js';
 	import { generateId } from '$lib/utils/id.js';
+	import { createClip } from '$lib/types/timeline.js';
 
 	const timeline = getTimeline();
 	const project = getProject();
@@ -102,33 +103,15 @@
 		if (!track) {
 			track = timeline.addTrack('video');
 		}
-		const clip = {
+		const clip = createClip({
 			id: generateId(),
 			name: `${name} BG`,
-			type: 'image' as const,
+			type: 'image',
 			assetId: asset.id,
 			trackId: track.id,
 			timelineStart: timeline.totalDuration,
 			duration: 5,
-			sourceStart: 0,
-			sourceEnd: 5,
-			volume: 1,
-			muted: false,
-			speed: 1,
-			opacity: 1,
-			filters: { brightness: 100, contrast: 100, saturation: 100, hue: 0, blur: 0, opacity: 100, exposure: 0, temperature: 0 },
-			filterPreset: null,
-			transform: { rotation: 0 as const, flipH: false, flipV: false },
-			crop: { top: 0, right: 0, bottom: 0, left: 0 },
-			fadeIn: 0,
-			fadeOut: 0,
-			noiseSuppression: false,
-			chromaKey: { enabled: false, color: 'green' as const, threshold: 0.4, smoothing: 0.1 },
-			reversed: false,
-			position: { x: 0, y: 0, width: 100, height: 100, zIndex: 0 },
-			groupId: null,
-			videoEffect: { type: 'none', intensity: 50 },
-		};
+		});
 		track.clips.push(clip);
 		timeline.tracks = [...timeline.tracks];
 	}

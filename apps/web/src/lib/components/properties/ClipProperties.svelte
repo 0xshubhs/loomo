@@ -6,7 +6,7 @@
 	import { getTimeline, getCommands } from '$lib/state/context.js';
 	import { SetVolumeCommand, SetClipFadeInCommand, SetClipFadeOutCommand, SetNoiseSuppressionCommand, DetachAudioCommand } from '$lib/commands/audio-commands.js';
 	import { SetClipFiltersCommand, SetClipTransformCommand, SetClipCropCommand, SetChromaKeyCommand, SetClipReversedCommand, SetClipPositionCommand, SetVideoEffectCommand } from '$lib/commands/clip-commands.js';
-	import { VIDEO_EFFECT_LIST } from '$lib/types/effects.js';
+	import { VIDEO_EFFECT_LIST, type VideoEffectType } from '$lib/types/effects.js';
 	import { formatDuration } from '$lib/utils/time.js';
 	import { FILTER_PRESETS, applyPreset, hasNonDefaultFilters } from '$lib/utils/filter-presets.js';
 	import { PIP_PRESETS, presetToPosition, hasNonDefaultPosition } from '$lib/utils/pip-presets.js';
@@ -175,7 +175,7 @@
 	let showPosition = $derived(clip.type === 'video' || clip.type === 'image');
 	let showEffects = $derived(clip.type === 'video');
 
-	function handleVideoEffectClick(effectType: string) {
+	function handleVideoEffectClick(effectType: VideoEffectType) {
 		const intensity = clip.videoEffect?.intensity ?? 50;
 		commands.execute(new SetVideoEffectCommand(timeline, clip.id, { type: effectType, intensity }));
 	}

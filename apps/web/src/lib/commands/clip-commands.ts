@@ -1,5 +1,6 @@
 import type { Command } from './base-command.js';
-import type { Clip, ClipFilters, ClipTransform, ClipCrop, ChromaKey, ClipPosition } from '$lib/types/index.js';
+import type { Clip, ClipFilters, ClipTransform, ClipCrop, ChromaKey, ClipPosition, VideoEffect } from '$lib/types/index.js';
+import { DEFAULT_VIDEO_EFFECT } from '$lib/types/index.js';
 import type { TimelineStore } from '$lib/state/timeline.svelte.js';
 import type { SilenceRegion } from '$lib/engine/silence-detector.js';
 import { generateId } from '$lib/utils/id.js';
@@ -515,12 +516,12 @@ export class SetClipPositionCommand implements Command {
 export class SetVideoEffectCommand implements Command {
 	readonly type = 'set-video-effect';
 	readonly description: string;
-	private previousEffect: { type: string; intensity: number } | null = null;
+	private previousEffect: VideoEffect | null = null;
 
 	constructor(
 		private timeline: TimelineStore,
 		private clipId: string,
-		private newEffect: { type: string; intensity: number }
+		private newEffect: VideoEffect
 	) {
 		this.description = `Set effect: ${newEffect.type}`;
 	}
@@ -528,7 +529,7 @@ export class SetVideoEffectCommand implements Command {
 	execute(): void {
 		const clip = this.timeline.getClipById(this.clipId);
 		if (!clip) throw new Error(`Clip ${this.clipId} not found`);
-		this.previousEffect = clip.videoEffect ? { ...clip.videoEffect } : { type: 'none', intensity: 50 };
+		this.previousEffect = clip.videoEffect ? { ...clip.videoEffect } : { ...DEFAULT_VIDEO_EFFECT };
 		clip.videoEffect = { ...this.newEffect };
 		this.timeline.tracks = [...this.timeline.tracks];
 	}

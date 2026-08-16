@@ -5,6 +5,9 @@ import type { RecordingResult } from '$lib/types/recorder.js';
 import { QUALITY_MAP } from '$lib/types/recorder.js';
 
 export class RecordingSession {
+  /** MediaRecorder pauses cleanly, unlike the native ffmpeg session. */
+  readonly canPause = true;
+
   private streamManager = new MediaStreamManager();
   private compositor: CanvasCompositor | null = null;
   private mediaRecorder: MediaRecorder | null = null;

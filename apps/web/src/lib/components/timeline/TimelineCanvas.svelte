@@ -10,7 +10,7 @@
 	import { getTrackIndexFromY } from '$lib/timeline/timeline-engine.js';
 	import { generateId } from '$lib/utils/id.js';
 	import type { Clip } from '$lib/types/index.js';
-	import { DEFAULT_CLIP_FILTERS, DEFAULT_TRANSFORM, DEFAULT_CROP, DEFAULT_CHROMA_KEY, DEFAULT_CLIP_POSITION } from '$lib/types/timeline.js';
+	import { createClip } from '$lib/types/timeline.js';
 
 	const timeline = getTimeline();
 	const playback = getPlayback();
@@ -185,7 +185,7 @@
 			targetTrack = timeline.addTrack(asset.type === 'audio' ? 'audio' : 'video');
 		}
 
-		const clip: Clip = {
+		const clip: Clip = createClip({
 			id: generateId(),
 			name: asset.name,
 			type: asset.type === 'image' ? 'image' : asset.type === 'audio' ? 'audio' : 'video',
@@ -193,24 +193,7 @@
 			trackId: targetTrack.id,
 			timelineStart: dropTime,
 			duration: asset.metadata.duration,
-			sourceStart: 0,
-			sourceEnd: asset.metadata.duration,
-			volume: 1,
-			muted: false,
-			speed: 1,
-			opacity: 1,
-			filters: { ...DEFAULT_CLIP_FILTERS },
-			filterPreset: null,
-			transform: { ...DEFAULT_TRANSFORM },
-			crop: { ...DEFAULT_CROP },
-			fadeIn: 0,
-			fadeOut: 0,
-			noiseSuppression: false,
-			chromaKey: { ...DEFAULT_CHROMA_KEY },
-			reversed: false,
-			position: { ...DEFAULT_CLIP_POSITION },
-			groupId: null,
-		};
+		});
 
 		commands.execute(new AddClipCommand(timeline, targetTrack.id, clip));
 

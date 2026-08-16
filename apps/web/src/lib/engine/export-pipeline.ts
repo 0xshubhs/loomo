@@ -1,13 +1,34 @@
 import type { ExportConfig, ExportProgress } from '$lib/types/index.js';
 import type { Track, Clip, ClipFilters, ClipTransform, ClipCrop } from '$lib/types/index.js';
 import type { Transition, TextOverlay, ShapeOverlay, CaptionTrack } from '$lib/types/index.js';
-import type { FFmpegBridge } from './ffmpeg-bridge.svelte.js';
+import type { FFmpegEngine } from './ffmpeg-engine.js';
 import { getShapeById } from '$lib/utils/shapes.js';
 import { RESOLUTION_MAP } from '$lib/types/export.js';
 import { DEFAULT_CLIP_FILTERS, DEFAULT_TRANSFORM, DEFAULT_CROP, DEFAULT_CHROMA_KEY, DEFAULT_CLIP_POSITION } from '$lib/types/timeline.js';
 import { hasNonDefaultFilters } from '$lib/utils/filter-presets.js';
 import { hasNonDefaultPosition } from '$lib/utils/pip-presets.js';
 import { chromaColorToFFmpegHex } from '$lib/utils/chroma-key.js';
+import {
+	buildVideoEffectFilters,
+	buildMosaicSubgraph,
+	buildDenoiseFilter,
+	buildSpeedCurveSetpts,
+	averageSpeed,
+	hasVideoEffect,
+	hasMosaics,
+	hasSpeedCurve,
+} from './ffmpeg-filters.js';
+import {
+	buildKeyframeColorFilter,
+	buildKeyframeRotationFilter,
+	buildKeyframeScaleFilter,
+	buildKeyframeVolumeFilter,
+	buildCompositeGraph,
+	buildAlphaScript,
+	hasAnyKeyframes,
+	hasGeometryKeyframes,
+	type AlphaScript,
+} from './keyframe-graph.js';
 
 /**
  * Export the timeline to a video file.
@@ -19,7 +40,7 @@ import { chromaColorToFFmpegHex } from '$lib/utils/chroma-key.js';
  * C) filter_complex      — text overlays or transitions → full re-encode (high memory)
  */
 export async function exportTimeline(
-	ffmpeg: FFmpegBridge,
+	ffmpeg: FFmpegEngine,
 	tracks: Track[],
 	transitions: Transition[],
 	textOverlays: TextOverlay[],
@@ -57,25 +78,37 @@ export async function exportTimeline(
 	const hasReversed = sortedClips.some((c) => c.reversed);
 	const hasPipPositions = sortedClips.some((c) => c.position && hasNonDefaultPosition(c.position));
 	const hasAudioFades = sortedClips.some((c) => (c.fadeIn ?? 0) > 0 || (c.fadeOut ?? 0) > 0);
-	const hasNoiseSuppression = sortedClips.some((c) => c.noiseSuppression);
+	const hasNoiseSuppression = sortedClips.some((c) => c.noiseSuppression || (c.denoiseStrength ?? 0) > 0);
 	const hasSpeedChanges = sortedClips.some((c) => c.speed !== 1);
 	const hasCaptions = !!(captionTrack?.enabled && captionTrack.segments.length > 0);
-	const hasEffects = textOverlays.length > 0 || shapeOverlays.length > 0 || transitions.length > 0 || hasClipFilters || hasClipTransforms || hasChromaKey || hasReversed || hasPipPositions || hasAudioFades || hasNoiseSuppression || hasSpeedChanges || hasCaptions;
+	// Anything below that is missing from this list gets silently dropped: a
+	// clip whose only change is one of these would otherwise take the
+	// stream-copy path and come out untouched. That is precisely how Motion FX
+	// used to disappear on export.
+	const hasMotionEffects = sortedClips.some(hasVideoEffect);
+	const hasMosaicRegions = sortedClips.some(hasMosaics);
+	const hasSpeedCurves = sortedClips.some(hasSpeedCurve);
+	const hasAnimation = sortedClips.some(hasAnyKeyframes);
+	const hasEffects = textOverlays.length > 0 || shapeOverlays.length > 0 || transitions.length > 0 || hasClipFilters || hasClipTransforms || hasChromaKey || hasReversed || hasPipPositions || hasAudioFades || hasNoiseSuppression || hasSpeedChanges || hasCaptions || hasMotionEffects || hasMosaicRegions || hasSpeedCurves || hasAnimation;
 	const outputFile = `output.${config.format}`;
 
 	const targetRes = RESOLUTION_MAP[config.resolution];
 	const targetWidth = config.customWidth ?? targetRes.width;
 	const targetHeight = config.customHeight ?? targetRes.height;
 
-	// Probe source resolution to decide if scaling is needed
+	// Probe source resolution to decide if scaling is needed. When the size
+	// cannot be read, scale anyway: stream-copying on a failed probe would
+	// quietly hand back the source resolution instead of the one requested.
 	let needsScale = false;
 	if (!hasEffects) {
 		const firstAsset = getAssetFile(sortedClips[0].assetId);
 		if (firstAsset) {
 			const sourceRes = await probeVideoResolution(firstAsset.file);
-			if (sourceRes.width > 0 && sourceRes.height > 0) {
-				needsScale = sourceRes.width !== targetWidth || sourceRes.height !== targetHeight;
-			}
+			needsScale =
+				sourceRes.width <= 0 ||
+				sourceRes.height <= 0 ||
+				sourceRes.width !== targetWidth ||
+				sourceRes.height !== targetHeight;
 		}
 	}
 
@@ -114,7 +147,18 @@ export async function exportTimeline(
 
 // ── Probe source resolution (no WASM needed) ───────────────────────
 
+/**
+ * Reads a source's dimensions with a throwaway `<video>` element.
+ *
+ * Returns zeros when the size cannot be determined — in a worker or the
+ * desktop engine there is no DOM to ask. Callers must treat zeros as "unknown"
+ * and scale anyway, rather than assuming the source already matches.
+ */
 function probeVideoResolution(file: File): Promise<{ width: number; height: number }> {
+	if (typeof document === 'undefined') {
+		return Promise.resolve({ width: 0, height: 0 });
+	}
+
 	return new Promise((resolve) => {
 		const url = URL.createObjectURL(file);
 		const video = document.createElement('video');
@@ -144,7 +188,7 @@ function probeVideoResolution(file: File): Promise<{ width: number; height: numb
 // ── Strategy A1: Single clip stream copy ────────────────────────────
 
 async function exportSingleClipStreamCopy(
-	ffmpeg: FFmpegBridge,
+	ffmpeg: FFmpegEngine,
 	clip: Clip,
 	config: ExportConfig,
 	outputFile: string,
@@ -190,7 +234,7 @@ async function exportSingleClipStreamCopy(
 // ── Strategy A2: Multi-clip concat with stream copy ─────────────────
 
 async function exportConcatStreamCopy(
-	ffmpeg: FFmpegBridge,
+	ffmpeg: FFmpegEngine,
 	sortedClips: Clip[],
 	config: ExportConfig,
 	outputFile: string,
@@ -268,7 +312,7 @@ async function exportConcatStreamCopy(
 // then all re-encoded clips are concatenated with stream copy.
 
 async function exportReencodeConcat(
-	ffmpeg: FFmpegBridge,
+	ffmpeg: FFmpegEngine,
 	sortedClips: Clip[],
 	config: ExportConfig,
 	width: number,
@@ -343,6 +387,14 @@ async function exportReencodeConcat(
 			vf += ',' + pipFilter;
 		}
 
+		// Video speed filter. This has to be appended before `-vf` is pushed:
+		// strings are immutable, so mutating vf afterwards would build the
+		// filter and then throw it away.
+		const speedFilter = buildSpeedVideoFilter(clip.speed);
+		if (speedFilter) {
+			vf += ',' + speedFilter;
+		}
+
 		// Reverse video filter (requires full clip decode)
 		if (clip.reversed) {
 			vf += ',reverse';
@@ -353,12 +405,6 @@ async function exportReencodeConcat(
 		const audioFilters = buildFfmpegAudioFilters(clip);
 		if (audioFilters.length > 0) {
 			args.push('-af', audioFilters.join(','));
-		}
-
-		// Video speed filter
-		const speedFilter = buildSpeedVideoFilter(clip.speed);
-		if (speedFilter) {
-			vf += ',' + speedFilter;
 		}
 
 		args.push('-c:v', config.videoCodec);
@@ -430,7 +476,7 @@ async function exportReencodeConcat(
 // ── Strategy C: filter_complex for effects ──────────────────────────
 
 async function exportFilterComplex(
-	ffmpeg: FFmpegBridge,
+	ffmpeg: FFmpegEngine,
 	sortedClips: Clip[],
 	textOverlays: TextOverlay[],
 	shapeOverlays: ShapeOverlay[],
@@ -477,6 +523,9 @@ async function exportFilterComplex(
 	}
 
 	const filterParts: string[] = [];
+	// sendcmd scripts for animated opacity, written to the working directory
+	// before the graph runs because the filter reads them by name.
+	const alphaScripts: AlphaScript[] = [];
 
 	for (let i = 0; i < sortedClips.length; i++) {
 		const clip = sortedClips[i];
@@ -491,8 +540,13 @@ async function exportFilterComplex(
 			vChain += ',' + cropFilter;
 		}
 
-		// Scale to target resolution
-		vChain += `,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`;
+		// An animated clip is composited over a canvas further down, so it is
+		// only fitted here — padding it now would scale the black bars too.
+		const animatedGeometry = hasGeometryKeyframes(clip);
+		const fit = `scale=${width}:${height}:force_original_aspect_ratio=decrease`;
+		const pad = `,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`;
+
+		vChain += `,${fit}${animatedGeometry ? '' : pad}`;
 
 		// Rotation and flip transforms
 		const transformFilters = buildFfmpegTransformFilters(clip);
@@ -500,7 +554,7 @@ async function exportFilterComplex(
 			vChain += ',' + transformFilters.join(',');
 			// Re-scale after rotation (90/270 swaps dimensions)
 			if (clip.transform?.rotation === 90 || clip.transform?.rotation === 270) {
-				vChain += `,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`;
+				vChain += `,${fit}${animatedGeometry ? '' : pad}`;
 			}
 		}
 
@@ -522,10 +576,43 @@ async function exportFilterComplex(
 			vChain += ',' + pipFilter;
 		}
 
-		// Video speed change
-		const speedFilter = buildSpeedVideoFilter(clip.speed);
-		if (speedFilter) {
-			vChain += ',' + speedFilter;
+		// Motion FX. Previously absent from this pipeline entirely, which is why
+		// effects showed up in the preview and never in the exported file.
+		const effectFilters = buildVideoEffectFilters(clip.videoEffect);
+		if (effectFilters.length > 0) {
+			vChain += ',' + effectFilters.join(',');
+		}
+
+		// Keyframed colour and rotation ride along as per-frame expressions.
+		const keyframeColor = buildKeyframeColorFilter(clip);
+		if (keyframeColor) {
+			vChain += ',' + keyframeColor;
+		}
+		const keyframeRotation = buildKeyframeRotationFilter(clip);
+		if (keyframeRotation) {
+			vChain += ',' + keyframeRotation;
+		}
+		const keyframeScale = buildKeyframeScaleFilter(clip);
+		if (keyframeScale) {
+			vChain += ',' + keyframeScale;
+		}
+
+		// Animated opacity needs a command script rather than an expression.
+		const alpha = buildAlphaScript(clip, i, config.fps);
+		if (alpha) {
+			alphaScripts.push(alpha);
+			vChain += ',' + alpha.filters.join(',');
+		}
+
+		// A speed curve replaces the constant-rate filter entirely.
+		const curveFilter = hasSpeedCurve(clip) ? buildSpeedCurveSetpts(clip.speedCurve!) : null;
+		if (curveFilter) {
+			vChain += ',' + curveFilter;
+		} else {
+			const speedFilter = buildSpeedVideoFilter(clip.speed);
+			if (speedFilter) {
+				vChain += ',' + speedFilter;
+			}
 		}
 
 		// Reverse video filter (requires full clip decode)
@@ -533,10 +620,41 @@ async function exportFilterComplex(
 			vChain += ',reverse';
 		}
 
-		filterParts.push(`${vChain}[${vLabel}]`);
+		// Compositing and mosaics both need multi-node subgraphs, so the chain
+		// is terminated here and continued as separate graph segments.
+		let stageLabel = vLabel;
+		const needsComposite = hasGeometryKeyframes(clip);
+		const needsMosaic = hasMosaics(clip);
+
+		if (needsComposite || needsMosaic) {
+			stageLabel = `${vLabel}pre`;
+			filterParts.push(`${vChain}[${stageLabel}]`);
+
+			if (needsComposite) {
+				const next = needsMosaic ? `${vLabel}cmp` : vLabel;
+				const composite = buildCompositeGraph(clip, stageLabel, next, width, height, config.fps);
+				filterParts.push(...composite.parts);
+				stageLabel = next;
+			}
+
+			if (needsMosaic) {
+				filterParts.push(...buildMosaicSubgraph(stageLabel, clip.mosaics, width, height, vLabel));
+			}
+		} else {
+			filterParts.push(`${vChain}[${vLabel}]`);
+		}
 
 		// Build audio chain with all effects
 		const audioFilters = buildFfmpegAudioFilters(clip);
+		const denoise = buildDenoiseFilter(clip.denoiseStrength ?? 0);
+		if (denoise) audioFilters.push(denoise);
+		const keyframeVolume = buildKeyframeVolumeFilter(clip);
+		if (keyframeVolume) audioFilters.push(keyframeVolume);
+		// Audio cannot follow a varying rate, so a curve is approximated by its
+		// mean; see averageSpeed for why.
+		if (curveFilter) {
+			audioFilters.push(...buildAtempoChain(averageSpeed(clip.speedCurve!)));
+		}
 		let aChain = `[${i}:a]atrim=start=${clip.sourceStart}:duration=${clip.duration},asetpts=PTS-STARTPTS`;
 		if (audioFilters.length > 0) {
 			aChain += ',' + audioFilters.join(',');
@@ -653,6 +771,13 @@ async function exportFilterComplex(
 			filterParts.push(`[${videoOut}]${strokeBox}[${strokeLabel}]`);
 			videoOut = strokeLabel;
 		}
+	}
+
+	// sendcmd opens these by name relative to the working directory, so they
+	// have to exist before the graph is built.
+	const encoder = new TextEncoder();
+	for (const script of alphaScripts) {
+		await ffmpeg.writeFile(script.filename, encoder.encode(script.content));
 	}
 
 	args.push('-filter_complex', filterParts.join(';'));
@@ -981,7 +1106,7 @@ function getExt(filename: string): string {
 	return filename.split('.').pop()?.toLowerCase() || 'mp4';
 }
 
-async function writeAssetFile(ffmpeg: FFmpegBridge, path: string, file: File): Promise<void> {
+async function writeAssetFile(ffmpeg: FFmpegEngine, path: string, file: File): Promise<void> {
 	const arrayBuffer = await file.arrayBuffer();
 	await ffmpeg.writeFile(path, arrayBuffer);
 }
@@ -994,12 +1119,12 @@ const MIME_MAP: Record<string, string> = {
 	mov: 'video/quicktime',
 };
 
-async function readOutputBlob(ffmpeg: FFmpegBridge, outputFile: string, format: string): Promise<Blob> {
+async function readOutputBlob(ffmpeg: FFmpegEngine, outputFile: string, format: string): Promise<Blob> {
 	const outputData = await ffmpeg.readFile(outputFile);
 	return new Blob([outputData], { type: MIME_MAP[format] ?? 'video/mp4' });
 }
 
-async function cleanup(ffmpeg: FFmpegBridge, paths: string[]): Promise<void> {
+async function cleanup(ffmpeg: FFmpegEngine, paths: string[]): Promise<void> {
 	for (const path of paths) {
 		try { await ffmpeg.deleteFile(path); } catch {}
 	}

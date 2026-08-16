@@ -6,7 +6,7 @@
 	import { uploadToPresignedUrl } from '$lib/api/upload.js';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { FFmpegBridge } from '$lib/engine/ffmpeg-bridge.svelte.js';
+	import { createFFmpegEngine, type FFmpegEngine } from '$lib/engine/ffmpeg-engine.js';
 
 	let {
 		result,
@@ -83,7 +83,7 @@
 	let converting = $state(false);
 	let convertProgress = $state(0);
 	let convertFormat = $state('');
-	let ffmpegInstance: FFmpegBridge | null = null;
+	let ffmpegInstance: FFmpegEngine | null = null;
 
 	function downloadBlob(blob: Blob, filename: string) {
 		const url = URL.createObjectURL(blob);
@@ -110,7 +110,7 @@
 		try {
 			if (!ffmpegInstance) {
 				convertFormat = 'Loading FFmpeg...';
-				ffmpegInstance = new FFmpegBridge();
+				ffmpegInstance = createFFmpegEngine();
 				await ffmpegInstance.initialize();
 				convertFormat = 'GIF';
 			}
@@ -165,7 +165,7 @@
 		try {
 			if (!ffmpegInstance) {
 				convertFormat = 'Loading FFmpeg...';
-				ffmpegInstance = new FFmpegBridge();
+				ffmpegInstance = createFFmpegEngine();
 				await ffmpegInstance.initialize();
 				convertFormat = format.toUpperCase();
 			}

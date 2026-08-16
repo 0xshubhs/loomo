@@ -3,12 +3,15 @@
   "private": true,
   "workspaces": [
     "apps/web",
+    "apps/desktop",
     "packages/shared"
   ],
   "scripts": {
     "dev": "make dev",
     "build": "make build",
     "check": "cd apps/web && bun run check",
+    "desktop": "make desktop-dev",
+    "desktop:build": "make desktop-build",
     "ext:open": "echo 'Load apps/extension/ as unpacked extension in chrome://extensions'"
   }
 }

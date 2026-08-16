@@ -1,0 +1,118 @@
+name: Desktop release
+
+# Builds every installer Loomo ships. macOS artefacts can only be produced on
+# a macOS runner and Windows artefacts on a Windows runner — that platform
+# restriction is why this is a matrix rather than one cross-compiling job.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build installers without creating a release'
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Apple silicon and Intel are separate binaries; a universal build
+          # would double the already-large bundled ffmpeg.
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            label: macOS (Apple silicon)
+          - platform: macos-13
+            target: x86_64-apple-darwin
+            label: macOS (Intel)
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            label: Linux (x86_64)
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: Windows (x86_64)
+
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Ubuntu 22.04 rather than 24.04+: the AppImage and .deb produced here
+      # must run on older glibc, and a newer builder raises the floor.
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            patchelf \
+            file \
+            build-essential \
+            pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+          key: ${{ matrix.target }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install JS dependencies
+        run: bun install --frozen-lockfile
+
+      # Invoked through node directly: bun's own flag parsing swallows the
+      # --target argument before the script ever sees it.
+      - name: Fetch bundled ffmpeg for ${{ matrix.target }}
+        run: node apps/desktop/scripts/fetch-ffmpeg.mjs --target ${{ matrix.target }}
+
+      - name: Build installers
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signing is optional: without these secrets the build still
+          # produces installers, they are just unsigned.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: apps/desktop
+          args: --target ${{ matrix.target }}
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          releaseName: 'Loomo ${{ github.ref_name }}'
+          releaseBody: 'Download the installer for your platform below.'
+          releaseDraft: true
+          prerelease: false
+          # workflow_dispatch runs only build; tag pushes also publish.
+          includeRelease: ${{ github.ref_type == 'tag' }}
+
+      - name: Upload installers as workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: loomo-${{ matrix.target }}
+          if-no-files-found: error
+          path: |
+            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
+            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/rpm/*.rpm
+            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
+            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi

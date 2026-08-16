@@ -4,6 +4,9 @@
 	import TransitionPicker from './TransitionPicker.svelte';
 	import TextEditor from './TextEditor.svelte';
 	import ShapeProperties from './ShapeProperties.svelte';
+	import KeyframePanel from './KeyframePanel.svelte';
+	import MosaicPanel from './MosaicPanel.svelte';
+	import SpeedCurvePanel from './SpeedCurvePanel.svelte';
 	import AudioMixer from './AudioMixer.svelte';
 
 	const selection = getSelection();
@@ -39,6 +42,12 @@
 	<div class="panel-body">
 		{#if selectedClip}
 			<ClipProperties clip={selectedClip} />
+			<div class="section-divider"></div>
+			<KeyframePanel clip={selectedClip} />
+			<div class="section-divider"></div>
+			<MosaicPanel clip={selectedClip} />
+			<div class="section-divider"></div>
+			<SpeedCurvePanel clip={selectedClip} />
 		{:else if selectedTransition}
 			<TransitionPicker transition={selectedTransition} />
 		{:else if selectedText}

@@ -1,7 +1,4 @@
-type OperationCallback = {
-	onProgress?: (progress: number) => void;
-	onLog?: (message: string) => void;
-};
+import type { FFmpegEngine, OperationCallback } from './ffmpeg-engine.js';
 
 interface PendingOp {
 	resolve: (value: any) => void;
@@ -9,7 +6,8 @@ interface PendingOp {
 	callbacks: OperationCallback;
 }
 
-export class FFmpegBridge {
+/** ffmpeg.wasm in a Web Worker — the engine used on the web. */
+export class FFmpegBridge implements FFmpegEngine {
 	private worker: Worker | null = null;
 	private pendingOps = new Map<string, PendingOp>();
 	private opCounter = 0;

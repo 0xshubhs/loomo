@@ -5,9 +5,17 @@ bun.lock
 # Build output
 dist/
 build/
+build-desktop/
 .svelte-kit/
 .output/
 .vercel/
+
+# Desktop (Tauri)
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
+# ~160 MB of static ffmpeg/ffprobe per platform — fetched by
+# `bun --cwd apps/desktop run ffmpeg`, never committed.
+apps/desktop/src-tauri/binaries/
 
 # Environment
 .env

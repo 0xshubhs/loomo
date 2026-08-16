@@ -1,6 +1,9 @@
-import type { PageServerLoad } from './$types';
+import type { PageLoad } from './$types';
 
-export const load: PageServerLoad = async ({ params, fetch }) => {
+// A universal load rather than a server load: it still runs on the server for
+// the web deployment's SSR pass, but the desktop build has no server, and a
+// `+page.server.ts` cannot exist in a static bundle.
+export const load: PageLoad = async ({ params, fetch }) => {
 	try {
 		const res = await fetch(`/api/share/${params.id}`);
 		if (!res.ok) throw new Error('not found');

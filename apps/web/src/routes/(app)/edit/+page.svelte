@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { getTimeline, getPlayback, getMediaLibrary, getUI, getSelection, getCommands, getCaptions } from '$lib/state/context.js';
-	import { FFmpegBridge } from '$lib/engine/ffmpeg-bridge.svelte.js';
+	import { createFFmpegEngine } from '$lib/engine/ffmpeg-engine.js';
 	import { importMediaFile } from '$lib/engine/media-import.js';
 	import { exportTimeline, downloadBlob } from '$lib/engine/export-pipeline.js';
 	import { matchShortcut } from '$lib/utils/keyboard.js';
@@ -30,7 +30,7 @@
 	const commands = getCommands();
 	const captions = getCaptions();
 
-	let ffmpeg = new FFmpegBridge();
+	let ffmpeg = createFFmpegEngine();
 	let exportProgress = $state<ExportProgress | null>(null);
 	let appReady = $state(false);
 	let ffmpegError = $state<string | null>(null);

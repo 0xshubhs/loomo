@@ -5,11 +5,14 @@
 	import CountdownOverlay from './CountdownOverlay.svelte';
 	import PostRecordPanel from './PostRecordPanel.svelte';
 	import CameraBubble from './CameraBubble.svelte';
-	import { RecordingSession } from '$lib/recorder/recording-session.js';
+	import { createRecordingSession, type AnyRecordingSession } from '$lib/recorder/create-session.js';
 	import { onMount } from 'svelte';
 
 	const recorder = getRecorder();
-	let session: RecordingSession | null = null;
+	// Reactive so the control bar can react to which backend we ended up on.
+	let session = $state<AnyRecordingSession | null>(null);
+	// Set when we had to fall back from native capture, e.g. on Wayland.
+	let captureNotice = $state<string | null>(null);
 
 	let showCameraBubble = $derived(
 		recorder.mode === 'screen-cam' &&
@@ -32,7 +35,9 @@
 	});
 
 	async function handleStart() {
-		session = new RecordingSession(recorder);
+		const choice = await createRecordingSession(recorder);
+		session = choice.session;
+		captureNotice = choice.notice;
 		try {
 			await session.start();
 		} catch (err) {
@@ -49,13 +54,14 @@
 	}
 
 	function handleRestart() {
-		session?.cancel();
+		void session?.cancel();
 		session = null;
 	}
 
 	function handleReRecord() {
 		recorder.reset();
 		session = null;
+		captureNotice = null;
 	}
 </script>
 
@@ -65,6 +71,17 @@
 
 <div class="record-layout">
 	<div class="layout-bg"></div>
+
+	{#if captureNotice}
+		<div class="capture-notice" role="status">
+			<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#ffaa00" stroke-width="2" stroke-linecap="round">
+				<circle cx="12" cy="12" r="10"/>
+				<line x1="12" y1="8" x2="12" y2="12"/>
+				<line x1="12" y1="16" x2="12.01" y2="16"/>
+			</svg>
+			<span>{captureNotice}</span>
+		</div>
+	{/if}
 
 	{#if currentView === 'pre'}
 		<div class="view-container fade-in">
@@ -76,6 +93,7 @@
 		<FloatingControls
 			isPaused={recorder.isPaused}
 			elapsedTime={recorder.formattedTime}
+			canPause={session?.canPause ?? true}
 			onpause={handlePause}
 			onresume={handleResume}
 			onstop={handleStop}
@@ -142,6 +160,29 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
+	}
+
+	.capture-notice {
+		position: fixed;
+		top: 16px;
+		left: 50%;
+		transform: translateX(-50%);
+		z-index: 20;
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		max-width: min(560px, calc(100vw - 32px));
+		padding: 10px 14px;
+		border-radius: 10px;
+		background: rgba(255, 170, 0, 0.1);
+		border: 1px solid rgba(255, 170, 0, 0.28);
+		color: var(--text-secondary);
+		font-size: 13px;
+		line-height: 1.4;
+	}
+
+	.capture-notice svg {
+		flex-shrink: 0;
 	}
 
 	.fade-in {

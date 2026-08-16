@@ -1,11 +1,11 @@
 import type { MediaAsset, MediaMetadata } from '$lib/types/index.js';
-import type { FFmpegBridge } from './ffmpeg-bridge.svelte.js';
+import type { FFmpegEngine } from './ffmpeg-engine.js';
 import { generateId } from '$lib/utils/id.js';
 import { getFileType } from '$lib/utils/file.js';
 
 export async function importMediaFile(
 	file: File,
-	ffmpeg: FFmpegBridge
+	ffmpeg: FFmpegEngine
 ): Promise<MediaAsset> {
 	const id = generateId();
 	const type = getFileType(file);
@@ -145,7 +145,7 @@ function probeMedia(blobUrl: string, type: 'video' | 'audio'): Promise<ProbeResu
 
 async function transcodeToH264(
 	file: File,
-	ffmpeg: FFmpegBridge
+	ffmpeg: FFmpegEngine
 ): Promise<{ blobUrl: string; file: File; metadata: MediaMetadata }> {
 	if (!ffmpeg.ready) {
 		throw new Error('FFmpeg is not ready yet. Please wait for it to load.');

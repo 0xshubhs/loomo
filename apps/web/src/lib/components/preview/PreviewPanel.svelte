@@ -6,6 +6,7 @@
 	import { applyChromaKey } from '$lib/utils/chroma-key.js';
 	import { hasNonDefaultPosition } from '$lib/utils/pip-presets.js';
 	import { buildVideoEffectCss } from '$lib/utils/video-effects.js';
+	import { buildKeyframeCss } from '$lib/utils/keyframe-css.js';
 	import { DEFAULT_CLIP_POSITION } from '$lib/types/timeline.js';
 	import { getUI } from '$lib/state/context.js';
 	import TransportControls from './TransportControls.svelte';
@@ -101,11 +102,15 @@
 		}
 		activeClipId = clip.id;
 
-		// Apply per-clip CSS filters, transforms, and position to the video element
-		applyVideoFilters(clip);
+		// Order matters. applyVideoTransforms assigns style.transform outright
+		// and applyChromaKeyEffect assigns style.opacity, so both have to run
+		// before applyVideoFilters, which appends the effect and keyframe
+		// contributions on top. Running filters first meant Motion FX
+		// transforms were overwritten a line later and never appeared.
 		applyVideoTransforms(clip);
-		applyVideoPosition(clip);
 		applyChromaKeyEffect(clip);
+		applyVideoFilters(clip);
+		applyVideoPosition(clip);
 
 		return true;
 	}
@@ -125,6 +130,25 @@
 				const existingTransform = videoEl.style.transform || '';
 				videoEl.style.transform = existingTransform ? `${existingTransform} ${effectCss.transform}` : effectCss.transform;
 			}
+		}
+
+		// Keyframes are evaluated against time within the clip, which is what
+		// FFmpeg's `t` means after the export chain trims and resets PTS.
+		const keyframeCss = buildKeyframeCss(clip, playback.currentTime - clip.timelineStart);
+		if (keyframeCss.filter) {
+			filterStr = filterStr === 'none' ? keyframeCss.filter : `${filterStr} ${keyframeCss.filter}`;
+		}
+		if (keyframeCss.transform) {
+			const existing = videoEl.style.transform || '';
+			videoEl.style.transform = existing ? `${existing} ${keyframeCss.transform}` : keyframeCss.transform;
+		}
+		// Chroma key hides the video element and draws to a canvas instead, so
+		// an animated opacity must not un-hide it.
+		if (keyframeCss.opacity && !chromaKeyActive) {
+			videoEl.style.opacity = keyframeCss.opacity;
+		}
+		if (keyframeCss.volume !== null) {
+			videoEl.volume = Math.min(keyframeCss.volume, 1);
 		}
 
 		videoEl.style.filter = filterStr === 'none' ? '' : filterStr;

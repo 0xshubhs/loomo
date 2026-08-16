@@ -31,6 +31,11 @@ function crossOriginIsolation(): Plugin {
 export default defineConfig({
 	plugins: [crossOriginIsolation(), sveltekit()],
 	server: {
+		// Pinned rather than passed on the command line: the Tauri shell's
+		// devUrl points here, and it must not silently drift to 5174 when
+		// another dev server already holds the port.
+		port: 5173,
+		strictPort: true,
 		proxy: {
 			'/api': {
 				target: 'http://localhost:8080',
