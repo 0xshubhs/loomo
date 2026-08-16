@@ -314,6 +314,45 @@ make clean        Stop containers, remove build artifacts
 
 ---
 
+## Music & Sound FX — `lib/api/audio-library.ts`
+
+Audio comes from **Openverse**, not Pexels. Pexels has no audio endpoint at all
+— `/v1/audio`, `/audio` and `/v1/music` all 404 while photos and videos return
+200 — so a second provider was the only option. Openverse aggregates Freesound,
+Jamendo and Wikimedia, and needs no API key.
+
+### Licence filtering is the point
+
+An unfiltered Openverse search returns `by-nc` and `by-nc-nd` results.
+**Neither can lawfully go into an edited video** — NC forbids commercial use,
+ND forbids derivative works — so no tier ever requests them. A test asserts
+that no emitted `license` parameter contains `nc`, `nd`, or `sa`.
+
+| Tier | Requests | Credit |
+|------|----------|--------|
+| `cc0` (default) | `cc0,pdm` | none required |
+| `attribution` | `cc0,pdm,by` | required, and surfaced |
+
+`by-sa` is excluded on purpose: share-alike can arguably propagate to the
+finished video, which is not a surprise to spring on someone mid-edit.
+
+### Attribution follows the asset
+
+`MediaAsset.attribution` carries the licence and a ready-made credit line, so
+the obligation survives to the point of publishing — by then the search that
+found the track is long gone. `utils/attribution.ts` collects and deduplicates
+the credits a project actually owes (CC0 assets are deliberately excluded, so
+the list is obligations only), and the export dialog shows them with a copy
+button.
+
+### Rate limits
+
+Anonymous callers get **20 requests/minute, 200/day**, so search is debounced
+at 500ms and every result is cached by query+tier+page. Remaining quota is read
+from the response headers and shown once it runs low.
+
+---
+
 ## Animation & Advanced Effects
 
 VN-parity editing features. Everything here renders in the preview *and* in the

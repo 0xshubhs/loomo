@@ -5,12 +5,13 @@
 	import ShapeBrowser from './ShapeBrowser.svelte';
 	import TitleBrowser from './TitleBrowser.svelte';
 	import StockBrowser from './StockBrowser.svelte';
+	import AudioBrowser from './AudioBrowser.svelte';
 	import GiphyBrowser from './GiphyBrowser.svelte';
 	import BackgroundBrowser from './BackgroundBrowser.svelte';
 
 	const mediaLibrary = getMediaLibrary();
 
-	type BrowserTab = 'media' | 'shapes' | 'titles' | 'stock' | 'giphy' | 'backgrounds';
+	type BrowserTab = 'media' | 'shapes' | 'titles' | 'stock' | 'audio' | 'giphy' | 'backgrounds';
 	let activeTab = $state<BrowserTab>('media');
 
 	interface Props {
@@ -57,6 +58,13 @@
 		</button>
 		<button
 			class="browser-tab"
+			class:active={activeTab === 'audio'}
+			onclick={() => (activeTab = 'audio')}
+		>
+			Audio
+		</button>
+		<button
+			class="browser-tab"
 			class:active={activeTab === 'giphy'}
 			onclick={() => (activeTab = 'giphy')}
 		>
@@ -94,6 +102,8 @@
 		<TitleBrowser />
 	{:else if activeTab === 'stock'}
 		<StockBrowser {onimport} />
+	{:else if activeTab === 'audio'}
+		<AudioBrowser />
 	{:else if activeTab === 'giphy'}
 		<GiphyBrowser {onimport} />
 	{:else if activeTab === 'backgrounds'}

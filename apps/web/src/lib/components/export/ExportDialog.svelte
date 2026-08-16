@@ -1,5 +1,7 @@
 <script lang="ts">
-	import { getUI, getTimeline, getProject } from '$lib/state/context.js';
+	import { getUI, getTimeline, getProject, getMediaLibrary } from '$lib/state/context.js';
+	import { requiredCredits, formatCredits } from '$lib/utils/attribution.js';
+	import { copyToClipboard } from '$lib/utils/clipboard.js';
 	import type { ExportConfig, ExportFormat, ExportProgress, Resolution } from '$lib/types/index.js';
 	import { FORMAT_DEFAULTS } from '$lib/types/export.js';
 	import { scaleToResolution } from '$lib/utils/aspect-ratios.js';
@@ -12,6 +14,15 @@
 	const ui = getUI();
 	const timeline = getTimeline();
 	const project = getProject();
+	const mediaLibrary = getMediaLibrary();
+
+	let credits = $derived(requiredCredits(mediaLibrary.assets));
+	let copied = $state(false);
+
+	async function copyCredits() {
+		copied = await copyToClipboard(formatCredits(credits));
+		if (copied) setTimeout(() => (copied = false), 2000);
+	}
 
 	interface Props {
 		ffmpegReady?: boolean;
@@ -116,6 +127,28 @@
 				<span>Ratio: {project.aspectRatio.label} ({exportDimensions.width}x{exportDimensions.height})</span>
 			</div>
 
+			{#if credits.length > 0}
+				<!-- Surfaced at export because this is the moment the video is
+				     about to leave the machine, and the obligation attaches to
+				     publishing it. -->
+				<div class="credits">
+					<div class="credits-head">
+						<span class="credits-title">Attribution required ({credits.length})</span>
+						<button class="credits-copy" onclick={copyCredits}>
+							{copied ? 'Copied' : 'Copy'}
+						</button>
+					</div>
+					<p class="credits-note">
+						These tracks are CC BY licensed. Include this credit wherever you publish.
+					</p>
+					<ul class="credits-list">
+						{#each credits as credit}
+							<li>{credit.text}</li>
+						{/each}
+					</ul>
+				</div>
+			{/if}
+
 			<div class="export-actions">
 				<Button variant="secondary" onclick={handleClose}>Cancel</Button>
 				<Button variant="primary" onclick={handleExport} disabled={!ffmpegReady || timeline.flatClips.length === 0}>
@@ -155,6 +188,61 @@
 		background: rgba(232, 145, 58, 0.1);
 		border-radius: 4px;
 		border: 1px solid rgba(232, 145, 58, 0.2);
+	}
+
+	.credits {
+		margin-top: 12px;
+		padding: 8px 10px;
+		border-radius: 6px;
+		background: rgba(255, 170, 0, 0.08);
+		border: 1px solid rgba(255, 170, 0, 0.25);
+	}
+
+	.credits-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+	}
+
+	.credits-title {
+		font-size: 11px;
+		font-weight: 600;
+		color: #ffbf5f;
+	}
+
+	.credits-copy {
+		font-size: 10px;
+		padding: 2px 8px;
+		cursor: pointer;
+		background: rgba(255, 255, 255, 0.07);
+		border: 1px solid var(--border-primary);
+		border-radius: 4px;
+		color: var(--text-secondary);
+	}
+
+	.credits-copy:hover {
+		color: var(--text-primary);
+	}
+
+	.credits-note {
+		font-size: 10px;
+		color: var(--text-tertiary);
+		margin: 4px 0 6px;
+		line-height: 1.4;
+	}
+
+	.credits-list {
+		margin: 0;
+		padding-left: 16px;
+		max-height: 96px;
+		overflow-y: auto;
+	}
+
+	.credits-list li {
+		font-size: 10px;
+		color: var(--text-secondary);
+		line-height: 1.5;
 	}
 
 	.export-actions {
