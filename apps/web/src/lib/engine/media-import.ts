@@ -143,6 +143,21 @@ function probeMedia(blobUrl: string, type: 'video' | 'audio'): Promise<ProbeResu
 	});
 }
 
+/**
+ * Whether this platform can decode H.264 in a `<video>` element.
+ *
+ * Chrome and Safari always can. The desktop app's webview is WebKitGTK, which
+ * decodes through GStreamer, so on a Linux box missing `gstreamer1.0-libav`
+ * the answer is no and every H.264 file looks corrupt to the editor.
+ */
+function canDecodeH264(): boolean {
+	if (typeof document === 'undefined') return true;
+	const video = document.createElement('video');
+	// avc1.42E01E is Baseline 3.0 — the most widely supported H.264 profile.
+	const support = video.canPlayType('video/mp4; codecs="avc1.42E01E"');
+	return support === 'probably' || support === 'maybe';
+}
+
 async function transcodeToH264(
 	file: File,
 	ffmpeg: FFmpegEngine
@@ -151,12 +166,30 @@ async function transcodeToH264(
 		throw new Error('FFmpeg is not ready yet. Please wait for it to load.');
 	}
 
+	// Transcoding produces H.264, so if the platform cannot decode H.264 the
+	// output would be just as unplayable as the input. Bail out with something
+	// the user can act on instead of spending minutes and gigabytes to arrive
+	// at the same failure.
+	if (!canDecodeH264()) {
+		throw new Error(
+			`Cannot play "${file.name}", and converting it would not help because this system has no H.264 decoder. ` +
+				`On Linux install the GStreamer codecs: sudo apt install gstreamer1.0-libav gstreamer1.0-plugins-good gstreamer1.0-plugins-bad`
+		);
+	}
+
 	const inputName = 'transcode_input' + getExtFromName(file.name);
 	const outputName = 'transcode_output.mp4';
 
-	// Write input file to FFmpeg virtual filesystem
-	const arrayBuffer = await file.arrayBuffer();
-	await ffmpeg.writeFile(inputName, arrayBuffer);
+	// Stream the source in when the engine allows it. Reading a large video
+	// into a single ArrayBuffer costs a full copy in the page, another in the
+	// IPC layer and another on the far side — enough to get the desktop app
+	// OOM-killed on an ordinary clip.
+	if (ffmpeg.writeFileStreaming) {
+		await ffmpeg.writeFileStreaming(inputName, file);
+	} else {
+		const arrayBuffer = await file.arrayBuffer();
+		await ffmpeg.writeFile(inputName, arrayBuffer);
+	}
 
 	// Transcode to H.264/AAC MP4 (fast preset for speed)
 	const exitCode = await ffmpeg.exec([

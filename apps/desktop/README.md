@@ -21,6 +21,24 @@ apps/desktop/
     └── make-icon.mjs      renders the 1024×1024 source icon
 ```
 
+## Runtime codecs (Linux)
+
+The app's webview is WebKitGTK, which decodes media through GStreamer rather
+than shipping its own codecs. Without `gstreamer1.0-libav` there is no H.264,
+HEVC or AAC decoder, so **every MP4 looks unplayable to the editor** — and the
+import path then tries to "fix" it by transcoding to H.264, which cannot help
+and used to exhaust memory on the way to failing.
+
+The `.deb` declares these now, so a normal install pulls them in. Running from
+a build tree does not, so install them once:
+
+```bash
+sudo apt install gstreamer1.0-libav gstreamer1.0-plugins-good \
+  gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly
+```
+
+Check with `gst-inspect-1.0 avdec_h264` — if that errors, MP4 will not play.
+
 ## Prerequisites
 
 Rust (stable), Bun, and — on Linux only — the WebKitGTK development headers:

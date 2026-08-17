@@ -1,4 +1,5 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
+import { writeInChunks, streamFileInChunks, type ChunkSink } from './chunked-write.js';
 import type { FFmpegEngine, OperationCallback } from './ffmpeg-engine.js';
 
 type ExecEvent =
@@ -9,6 +10,7 @@ interface FFmpegInfo {
 	version: string;
 	scratchDir: string;
 }
+
 
 export interface NativeMediaProbe {
 	duration: number;
@@ -83,10 +85,28 @@ export class NativeFFmpegEngine implements FFmpegEngine {
 	}
 
 	async writeFile(path: string, data: ArrayBuffer | Uint8Array): Promise<void> {
-		// Sent as a raw IPC body rather than a JSON argument — a gigabyte of
-		// video does not want to be base64'd across the bridge.
 		const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
-		await invoke('scratch_write', bytes, { headers: { 'x-loomo-path': path } });
+		await writeInChunks(bytes, this.#sink(path));
+	}
+
+	/** Streams a `File` to scratch without ever holding it whole in memory. */
+	async writeFileStreaming(
+		path: string,
+		file: File,
+		onProgress?: (fraction: number) => void
+	): Promise<void> {
+		await streamFileInChunks(file, this.#sink(path), onProgress);
+	}
+
+	#sink(path: string): ChunkSink {
+		return async (chunk, append) => {
+			await invoke('scratch_write', chunk, {
+				headers: {
+					'x-loomo-path': path,
+					'x-loomo-append': append ? '1' : '0',
+				},
+			});
+		};
 	}
 
 	async readFile(path: string): Promise<ArrayBuffer> {

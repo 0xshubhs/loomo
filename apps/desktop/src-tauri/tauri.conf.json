@@ -59,7 +59,12 @@
 		"externalBin": ["binaries/loomo-ffmpeg", "binaries/loomo-ffprobe"],
 		"linux": {
 			"deb": {
-				"depends": []
+				"depends": [
+					"gstreamer1.0-libav",
+					"gstreamer1.0-plugins-base",
+					"gstreamer1.0-plugins-good",
+					"gstreamer1.0-plugins-bad"
+				]
 			},
 			"appimage": {
 				"bundleMediaFramework": false

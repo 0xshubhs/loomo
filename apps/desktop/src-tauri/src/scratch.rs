@@ -66,13 +66,19 @@ fn header<'a>(request: &'a Request<'_>, name: &str) -> Option<&'a str> {
     request.headers().get(name).and_then(|v| v.to_str().ok())
 }
 
-/// Writes bytes into the scratch dir. Takes a raw IPC body rather than a JSON
-/// argument so multi-gigabyte media doesn't get base64'd through the bridge.
+/// Writes bytes into the scratch dir, replacing or appending.
+///
+/// Takes a raw IPC body rather than a JSON argument, and supports appending so
+/// the caller can stream a large file across in chunks. Sending a whole video
+/// in one call means the browser holds the entire file, the IPC layer holds a
+/// copy, and this side holds another — which is how importing a moderately
+/// large clip managed to peak at several gigabytes and get the app OOM-killed.
 #[tauri::command]
 pub fn scratch_write(request: Request<'_>, scratch: State<'_, Scratch>) -> Result<(), String> {
     let virtual_path = header(&request, "x-loomo-path")
         .ok_or("scratch_write: missing x-loomo-path header")?
         .to_string();
+    let append = header(&request, "x-loomo-append") == Some("1");
 
     let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
         return Err("scratch_write: expected a raw body".into());
@@ -82,7 +88,19 @@ pub fn scratch_write(request: Request<'_>, scratch: State<'_, Scratch>) -> Resul
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    fs::write(&target, bytes).map_err(|e| format!("write {}: {e}", target.display()))
+
+    if append {
+        use std::io::Write;
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&target)
+            .map_err(|e| format!("open {}: {e}", target.display()))?;
+        file.write_all(bytes)
+            .map_err(|e| format!("append {}: {e}", target.display()))
+    } else {
+        fs::write(&target, bytes).map_err(|e| format!("write {}: {e}", target.display()))
+    }
 }
 
 /// Reads bytes back out as a raw IPC response (an ArrayBuffer on the JS side).

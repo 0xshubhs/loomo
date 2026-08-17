@@ -27,6 +27,15 @@ export interface FFmpegEngine {
 	/** Resolves with the process exit code; rejects when ffmpeg itself errors. */
 	exec(args: string[], callbacks?: OperationCallback): Promise<number>;
 	writeFile(path: string, data: ArrayBuffer | Uint8Array): Promise<void>;
+	/**
+	 * Streams a File across without materialising it in memory. Only the
+	 * native engine implements this; callers must fall back to `writeFile`.
+	 */
+	writeFileStreaming?(
+		path: string,
+		file: File,
+		onProgress?: (fraction: number) => void
+	): Promise<void>;
 	readFile(path: string): Promise<ArrayBuffer>;
 	deleteFile(path: string): Promise<void>;
 	terminate(): void;
