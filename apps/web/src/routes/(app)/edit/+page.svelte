@@ -31,6 +31,12 @@
 	const captions = getCaptions();
 
 	let ffmpeg = createFFmpegEngine();
+
+	// Dev-only handle so the editor can be driven and inspected from an
+	// automated WebKitGTK harness. Stripped from production builds.
+	if (import.meta.env.DEV && typeof window !== 'undefined') {
+		(window as any).__loomo = { timeline, playback, mediaLibrary, ui, selection, commands };
+	}
 	let exportProgress = $state<ExportProgress | null>(null);
 	let appReady = $state(false);
 	let ffmpegError = $state<string | null>(null);
@@ -64,6 +70,7 @@
 			try {
 				const asset = await importMediaFile(files[i], ffmpeg);
 				mediaLibrary.addAsset(asset);
+				console.info(`[import] added "${asset.name}" — library now has ${mediaLibrary.assets.length}`);
 
 				// Auto-create track if none exist
 				if (timeline.tracks.length === 0) {

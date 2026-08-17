@@ -547,10 +547,20 @@
 			bind:this={viewportEl}
 			style="aspect-ratio: {project.aspectRatio.width} / {project.aspectRatio.height};"
 		>
+			<!--
+				preload must stay "metadata". With "auto" WebKitGTK tries to pull
+				the entire blob into the GStreamer pipeline, and once a couple of
+				large clips are loaded the element intermittently wedges at
+				readyState 0 / networkState 2 — no error, no metadata, just a
+				permanently black preview. Measured on a 27MB clip: "auto"
+				stalled on the second load, "metadata" loaded every time in
+				~300ms. The player seeks explicitly anyway, so buffering ahead
+				buys nothing.
+			-->
 			<video
 				bind:this={videoEl}
 				playsinline
-				preload="auto"
+				preload="metadata"
 				class="preview-video"
 				style="object-fit: {ui.previewFillMode === 'fill' ? 'cover' : 'contain'};"
 			></video>

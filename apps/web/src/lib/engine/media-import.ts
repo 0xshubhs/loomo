@@ -9,6 +9,9 @@ export async function importMediaFile(
 ): Promise<MediaAsset> {
 	const id = generateId();
 	const type = getFileType(file);
+	// Traced end to end: import has several places it can stall or bail, and
+	// without this the only symptom is that nothing appears in the library.
+	console.info(`[import] "${file.name}" type=${type} size=${file.size} mime=${file.type || 'none'}`);
 	if (type === 'unknown') throw new Error(`Unsupported file type: ${file.name}`);
 
 	let blobUrl = URL.createObjectURL(file);
@@ -20,10 +23,15 @@ export async function importMediaFile(
 	if (type === 'video') {
 		// First try native browser playback
 		const nativeResult = await probeMedia(blobUrl, 'video');
+		console.info(
+			`[import] probe playable=${nativeResult.playable} dur=${nativeResult.metadata.duration.toFixed(2)} ` +
+				`${nativeResult.metadata.width}x${nativeResult.metadata.height}`
+		);
 
 		if (nativeResult.playable) {
 			metadata = nativeResult.metadata;
 			thumbnails = await generateThumbnails(blobUrl, metadata.duration, 6);
+			console.info(`[import] thumbnails=${thumbnails.length}`);
 		} else {
 			// Browser can't play this format (HEVC/ProRes .mov etc)
 			// Transcode to H.264 MP4 via FFmpeg.wasm

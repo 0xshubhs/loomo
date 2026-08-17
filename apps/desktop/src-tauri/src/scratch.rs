@@ -136,6 +136,36 @@ pub fn scratch_size(path: String, scratch: State<'_, Scratch>) -> Result<u64, St
     Ok(fs::metadata(&target).map(|m| m.len()).unwrap_or(0))
 }
 
+/// Writes a line from the webview to stderr and to a log file.
+///
+/// WebKitGTK runs page content in a separate process and does not forward
+/// `console.*` to the host's stderr, so anything the frontend logs is
+/// invisible from a terminal. Routing diagnostics through a command is the
+/// only way to see what the UI is actually doing.
+#[tauri::command]
+pub fn diag_log(app: tauri::AppHandle, line: String) {
+    eprintln!("[loomo] {line}");
+
+    if let Ok(dir) = app.path().app_data_dir() {
+        let _ = fs::create_dir_all(&dir);
+        if let Ok(mut file) = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("diagnostics.log"))
+        {
+            use std::io::Write;
+            let _ = writeln!(file, "{line}");
+        }
+    }
+}
+
+/// Absolute path of the diagnostics log, so the UI can tell the user where it is.
+#[tauri::command]
+pub fn diag_log_path(app: tauri::AppHandle) -> Result<String, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(dir.join("diagnostics.log").to_string_lossy().into_owned())
+}
+
 /// Copies a finished artefact out of scratch to a user-chosen destination.
 #[tauri::command]
 pub fn scratch_export(

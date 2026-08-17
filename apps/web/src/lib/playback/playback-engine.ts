@@ -42,7 +42,7 @@ export class PlaybackEngine {
 		if (video) return video;
 
 		video = document.createElement('video');
-		video.preload = 'auto';
+		video.preload = 'metadata'; // 'auto' wedges WebKitGTK on large blobs
 		video.playsInline = true;
 		video.muted = true; // Start muted, unmuted on play()
 		video.src = blobUrl;

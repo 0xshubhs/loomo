@@ -66,6 +66,7 @@
 			try {
 				const asset = await importMediaFile(files[i], ffmpeg);
 				mediaLibrary.addAsset(asset);
+				console.info(`[import] added "${asset.name}" — library now has ${mediaLibrary.assets.length}`);
 
 				// Auto-create track if none exist
 				if (timeline.tracks.length === 0) {

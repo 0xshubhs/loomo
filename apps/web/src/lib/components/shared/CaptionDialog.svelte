@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { getCaptions, getTimeline, getMediaLibrary, getUI } from '$lib/state/context.js';
 	import { transcribeAudio, isSpeechRecognitionSupported, SUPPORTED_LANGUAGES } from '$lib/engine/speech-recognition.js';
 	import { downloadSRT } from '$lib/utils/srt.js';
@@ -55,10 +56,18 @@
 		});
 	}
 
-	// Sync style changes reactively
+	// Push local style edits into the store when any of them changes.
+	//
+	// The write must be untracked. `updateCaptionStyle` merges into the
+	// existing style, so it reads `captionTrack.style` and then assigns it —
+	// and a read inside a tracked effect becomes a dependency that the
+	// following write immediately invalidates. That cycle threw
+	// `effect_update_depth_exceeded` on editor mount, which tears down Svelte's
+	// effect tree: the UI then stopped updating entirely, so imported media
+	// never appeared even though the import itself had succeeded.
 	$effect(() => {
 		void fontFamily, fontSize, fontColor, backgroundColor, position, alignment, bgTransparent;
-		syncStyleToStore();
+		untrack(() => syncStyleToStore());
 	});
 
 	async function handleGenerate() {

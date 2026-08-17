@@ -9,7 +9,7 @@ export async function generateThumbnailsFromVideo(
 
 	return new Promise((resolve) => {
 		const video = document.createElement('video');
-		video.preload = 'auto';
+		video.preload = 'metadata'; // 'auto' wedges WebKitGTK on large blobs
 		video.muted = true;
 
 		const canvas = document.createElement('canvas');
