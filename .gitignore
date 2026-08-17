@@ -46,3 +46,6 @@ docker/miniodata/
 
 # Testing
 coverage/
+
+# Local build sysroot (extracted -dev packages, regenerable)
+apps/desktop/.build-sysroot/

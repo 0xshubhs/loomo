@@ -262,7 +262,10 @@ function generateThumbnails(
 		}
 
 		const video = document.createElement('video');
-		video.preload = 'auto';
+		// 'metadata' rather than 'auto': the whole point is to seek to a handful
+		// of points, and asking the browser to buffer the entire file first
+		// makes a long clip crawl for no benefit.
+		video.preload = 'metadata';
 		video.muted = true;
 
 		const canvas = document.createElement('canvas');
@@ -273,47 +276,72 @@ function generateThumbnails(
 		const thumbnails: string[] = [];
 		const interval = duration / count;
 		let currentIndex = 0;
+		let settled = false;
 
-		const timeout = setTimeout(() => {
+		// Overall ceiling, plus a per-seek one below.
+		const timeout = setTimeout(() => finish(), 8000);
+
+		function finish() {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timeout);
+			clearTimeout(seekTimer);
+			video.onseeked = null;
+			video.onloadeddata = null;
+			video.onerror = null;
+			// Release the decoder; a lingering <video> on a large blob keeps
+			// the whole buffer alive.
+			video.removeAttribute('src');
+			video.load();
 			resolve(thumbnails);
-		}, 15000);
+		}
+
+		let seekTimer: ReturnType<typeof setTimeout>;
+
+		/**
+		 * Some files simply refuse to seek to a given offset — one real 235s
+		 * H.264 clip fires `seeked` once and then never again, which used to
+		 * stall every import behind the 15s ceiling. Giving up on a single
+		 * seek and moving on keeps a stubborn file from holding up the rest.
+		 */
+		function seekTo(index: number) {
+			clearTimeout(seekTimer);
+			if (index >= count) {
+				finish();
+				return;
+			}
+			seekTimer = setTimeout(() => {
+				// This position is not coming; stop rather than wait it out.
+				finish();
+			}, 2500);
+			// Never target exactly 0: currentTime is already 0, so assigning it
+			// fires no `seeked` event and the first frame would never arrive.
+			const target = Math.max(0.1, index * interval);
+			video.currentTime = Math.min(target, Math.max(0.1, duration - 0.1));
+		}
 
 		video.onseeked = () => {
+			clearTimeout(seekTimer);
 			try {
 				ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 				canvas.toBlob(
 					(blob) => {
-						if (blob) {
-							thumbnails.push(URL.createObjectURL(blob));
-						}
+						if (blob) thumbnails.push(URL.createObjectURL(blob));
 						currentIndex++;
-						if (currentIndex < count) {
-							video.currentTime = Math.min(currentIndex * interval, duration - 0.1);
-						} else {
-							clearTimeout(timeout);
-							resolve(thumbnails);
-						}
+						seekTo(currentIndex);
 					},
 					'image/jpeg',
 					0.6
 				);
 			} catch {
 				currentIndex++;
-				if (currentIndex >= count) {
-					clearTimeout(timeout);
-					resolve(thumbnails);
-				}
+				seekTo(currentIndex);
 			}
 		};
 
-		video.onloadeddata = () => {
-			video.currentTime = 0.1;
-		};
+		video.onloadeddata = () => seekTo(0);
 
-		video.onerror = () => {
-			clearTimeout(timeout);
-			resolve([]);
-		};
+		video.onerror = () => finish();
 
 		video.src = blobUrl;
 	});
