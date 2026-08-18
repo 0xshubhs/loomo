@@ -22,8 +22,55 @@ use tokio::sync::Notify;
 
 use crate::scratch::Scratch;
 
+/// How the running recording is driven, and therefore how to stop it cleanly.
+enum Recorder {
+    /// ffmpeg sidecar: finalises when "q" arrives on stdin.
+    Ffmpeg(CommandChild),
+    /// GStreamer reading the portal's PipeWire node; finalises on SIGINT, the
+    /// same shutdown `gst-launch -e` documents and OBS relies on.
+    #[cfg(target_os = "linux")]
+    Gstreamer {
+        child: std::process::Child,
+        /// Dropping this closes the portal session and revokes the node, so it
+        /// has to outlive the pipeline.
+        _portal: crate::portal::PortalStream,
+    },
+}
+
+impl Recorder {
+    /// Asks the recorder to finish and write its index.
+    fn request_stop(&mut self) {
+        match self {
+            Recorder::Ffmpeg(child) => {
+                let _ = child.write(b"q\n");
+            }
+            #[cfg(target_os = "linux")]
+            Recorder::Gstreamer { child, .. } => {
+                // SIGINT, not kill: gst-launch turns it into an end-of-stream
+                // so mp4mux writes the moov atom. A kill leaves an unplayable
+                // file, exactly as it would with ffmpeg.
+                unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGINT) };
+            }
+        }
+    }
+
+    fn kill(self) {
+        match self {
+            // CommandChild::kill consumes the child, which is why this takes
+            // self rather than &mut self.
+            Recorder::Ffmpeg(child) => {
+                let _ = child.kill();
+            }
+            #[cfg(target_os = "linux")]
+            Recorder::Gstreamer { mut child, .. } => {
+                let _ = child.kill();
+            }
+        }
+    }
+}
+
 struct CaptureHandle {
-    child: CommandChild,
+    child: Recorder,
     output_name: String,
     output_path: PathBuf,
     started: Instant,
@@ -121,20 +168,20 @@ fn platform_capabilities() -> CaptureCapabilities {
         session.eq_ignore_ascii_case("wayland") || std::env::var("WAYLAND_DISPLAY").is_ok();
     let has_x11 = std::env::var("DISPLAY").is_ok();
 
-    // Under Wayland, x11grab only ever sees Xwayland clients — usually a black
-    // frame. Portal/PipeWire capture is the real answer there and isn't wired
-    // up yet, so we hand back to the browser recorder.
+    // Under Wayland x11grab only ever sees Xwayland clients — a black frame.
+    // Capture goes through xdg-desktop-portal and PipeWire instead, which is
+    // what OBS does there. Both halves have to be present: the portal to grant
+    // a node, and a GStreamer pipeline to read it.
     if wayland {
+        let missing = wayland_capture_missing();
         return CaptureCapabilities {
-            available: false,
-            backend: "x11grab".into(),
-            reason: Some(
-                "This is a Wayland session. Native capture needs X11; \
-                 falling back to the browser recorder."
-                    .into(),
-            ),
+            available: missing.is_none(),
+            backend: "pipewire".into(),
+            reason: missing,
             supports_audio: true,
-            supports_region: true,
+            // The compositor's own picker chooses the screen or window; the
+            // portal has no notion of an arbitrary rectangle.
+            supports_region: false,
         };
     }
 
@@ -145,6 +192,47 @@ fn platform_capabilities() -> CaptureCapabilities {
         supports_audio: true,
         supports_region: true,
     }
+}
+
+/// `None` when Wayland capture can run; otherwise what is missing.
+#[cfg(target_os = "linux")]
+fn wayland_capture_missing() -> Option<String> {
+    if !command_exists("gst-launch-1.0") {
+        return Some(
+            "Wayland screen capture needs GStreamer. Install gstreamer1.0-tools, \
+             gstreamer1.0-pipewire and gstreamer1.0-plugins-ugly."
+                .into(),
+        );
+    }
+    if !gst_element_exists("pipewiresrc") {
+        return Some("Wayland screen capture needs gstreamer1.0-pipewire.".into());
+    }
+    if !gst_element_exists("x264enc") {
+        return Some("Wayland screen capture needs gstreamer1.0-plugins-ugly.".into());
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn command_exists(name: &str) -> bool {
+    std::process::Command::new(name)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "linux")]
+fn gst_element_exists(element: &str) -> bool {
+    std::process::Command::new("gst-inspect-1.0")
+        .arg(element)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 #[cfg(target_os = "macos")]
@@ -187,6 +275,119 @@ pub fn capture_capabilities() -> CaptureCapabilities {
 }
 
 /// Builds the platform-specific input half of the ffmpeg command line.
+#[cfg(target_os = "linux")]
+fn is_wayland() -> bool {
+    std::env::var("XDG_SESSION_TYPE")
+        .map(|s| s.eq_ignore_ascii_case("wayland"))
+        .unwrap_or(false)
+        || std::env::var("WAYLAND_DISPLAY").is_ok()
+}
+
+/**
+ * Records a Wayland session through the portal.
+ *
+ * The compositor shows its own picker during `open_screencast` — that consent
+ * is what produces the PipeWire node, and there is no way around it. From there
+ * GStreamer reads the node and encodes to the same H.264 MP4 the other
+ * platforms produce, so everything downstream is unchanged.
+ */
+#[cfg(target_os = "linux")]
+async fn start_wayland_capture(
+    state: State<'_, CaptureState>,
+    options: CaptureOptions,
+    output_name: String,
+    output_path: PathBuf,
+) -> Result<CaptureStarted, String> {
+    let portal = crate::portal::open_screencast(true).await?;
+
+    // Built as separate argv tokens rather than one string split on spaces: a
+    // scratch path containing a space would otherwise be torn in half.
+    // `-e` makes gst-launch turn our SIGINT into an end-of-stream, which is
+    // what lets mp4mux finish the file.
+    let argv: Vec<String> = vec![
+        "-e".into(),
+        format!("pipewiresrc"),
+        format!("path={}", portal.node_id),
+        "!".into(),
+        "videorate".into(),
+        "!".into(),
+        format!("video/x-raw,framerate={}/1", options.fps),
+        "!".into(),
+        "videoconvert".into(),
+        "!".into(),
+        "x264enc".into(),
+        format!("speed-preset={}", gst_preset(&options.preset)),
+        "tune=zerolatency".into(),
+        format!("key-int-max={}", options.fps * 2),
+        "!".into(),
+        "h264parse".into(),
+        "!".into(),
+        "mp4mux".into(),
+        "!".into(),
+        "filesink".into(),
+        format!("location={}", output_path.display()),
+    ];
+
+    let output_path_string = output_path.to_string_lossy().into_owned();
+
+    let mut child = std::process::Command::new("gst-launch-1.0")
+        .args(&argv)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("cannot start GStreamer: {e}"))?;
+
+    let finished = Arc::new(Notify::new());
+    let exit_code = Arc::new(Mutex::new(None));
+    let log = Arc::new(Mutex::new(Vec::new()));
+
+    // stderr has to be drained or the pipeline blocks once the pipe fills.
+    if let Some(stderr) = child.stderr.take() {
+        let log = log.clone();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(stderr).lines().map_while(Result::ok) {
+                let mut log = log.lock().unwrap();
+                if log.len() < 200 {
+                    log.push(line);
+                }
+            }
+        });
+    }
+
+    *state.active.lock().unwrap() = Some(CaptureHandle {
+        child: Recorder::Gstreamer {
+            child,
+            _portal: portal,
+        },
+        output_name: output_name.clone(),
+        output_path,
+        started: Instant::now(),
+        finished,
+        exit_code,
+        log,
+    });
+
+    Ok(CaptureStarted {
+        output_name,
+        output_path: output_path_string,
+        command: argv,
+    })
+}
+
+/// x264enc names its presets differently from the ffmpeg CLI.
+#[cfg(target_os = "linux")]
+fn gst_preset(ffmpeg_preset: &str) -> &'static str {
+    match ffmpeg_preset {
+        "ultrafast" | "superfast" => "ultrafast",
+        "veryfast" => "veryfast",
+        "faster" => "faster",
+        "fast" => "fast",
+        "slow" | "slower" | "veryslow" => "slow",
+        _ => "medium",
+    }
+}
+
 fn input_args(options: &CaptureOptions) -> Vec<String> {
     let fps = options.fps.to_string();
     let mut args: Vec<String> = Vec::new();
@@ -304,6 +505,13 @@ pub async fn capture_start(
         .unwrap_or_else(|| "capture.mp4".to_string());
     let output_path = scratch.resolve(&output_name)?;
 
+    // Wayland has no grabber ffmpeg can use, so the recording is driven by a
+    // GStreamer pipeline reading the node the portal granted.
+    #[cfg(target_os = "linux")]
+    if is_wayland() {
+        return start_wayland_capture(state, options, output_name, output_path).await;
+    }
+
     // Deliberately no `-nostdin` here, unlike ffmpeg_exec: capture_stop ends
     // the recording by writing "q" to stdin, and -nostdin would make ffmpeg
     // ignore it — the stop would time out and fall back to a kill, leaving an
@@ -320,6 +528,8 @@ pub async fn capture_start(
         .args(&argv)
         .spawn()
         .map_err(|e| format!("cannot start capture: {e}"))?;
+
+    let child = Recorder::Ffmpeg(child);
 
     let finished = Arc::new(Notify::new());
     let exit_code = Arc::new(Mutex::new(None));
@@ -383,9 +593,9 @@ pub async fn capture_stop(
     let (finished, exit_code, log, output_name, output_path, started) = {
         let mut active = state.active.lock().unwrap();
         let handle = active.as_mut().ok_or("No recording is running.")?;
-        // "q" on stdin makes ffmpeg finalise the container — killing it here
-        // would leave an unplayable moov-less MP4.
-        let _ = handle.child.write(b"q\n");
+        // Finalising the container matters either way: killing the process
+        // leaves an unplayable MP4 with no moov atom.
+        handle.child.request_stop();
         (
             handle.finished.clone(),
             handle.exit_code.clone(),
@@ -402,8 +612,8 @@ pub async fn capture_stop(
 
     let handle = state.active.lock().unwrap().take();
     if !graceful {
-        if let Some(handle) = handle {
-            let _ = handle.child.kill();
+        if let Some(mut handle) = handle {
+            handle.child.kill();
         }
         return Err(format!(
             "Recording did not finalise in time; the file may be truncated.\n{}",
@@ -627,7 +837,7 @@ pub async fn capture_sources(app: AppHandle) -> Result<Vec<CaptureSource>, Strin
 
 /// Stops any running capture without waiting — used on app shutdown.
 pub fn abort(state: &CaptureState) {
-    if let Some(handle) = state.active.lock().unwrap().take() {
-        let _ = handle.child.kill();
+    if let Some(mut handle) = state.active.lock().unwrap().take() {
+        handle.child.kill();
     }
 }

@@ -7,6 +7,7 @@
 	import CameraBubble from './CameraBubble.svelte';
 	import { createRecordingSessionSync, createRecordingSession, type AnyRecordingSession } from '$lib/recorder/create-session.js';
 	import { prefetchCaptureCapabilities } from '$lib/desktop/capture.js';
+	import { enterRecordingChrome, exitRecordingChrome } from '$lib/desktop/recording-window.js';
 	import { onMount } from 'svelte';
 
 	const recorder = getRecorder();
@@ -50,8 +51,10 @@
 			captureNotice = resolved.notice;
 			try {
 				await session.start();
+				await enterRecordingChrome();
 			} catch (err) {
 				console.error('Recording failed:', err);
+				await exitRecordingChrome();
 			}
 			return;
 		}
@@ -60,8 +63,12 @@
 		captureNotice = choice.notice;
 		try {
 			await session.start();
+			// Only after capture is granted and running: shrinking the window
+			// on a cancelled screen-picker would leave a stray control bar.
+			await enterRecordingChrome();
 		} catch (err) {
 			console.error('Recording failed:', err);
+			await exitRecordingChrome();
 		}
 	}
 
@@ -70,11 +77,15 @@
 
 	async function handleStop() {
 		if (!session) return;
+		// Restore first: the post-recording panel needs room, and the user is
+		// done with the bar the moment they press stop.
+		await exitRecordingChrome();
 		await session.stop();
 	}
 
 	function handleRestart() {
 		void session?.cancel();
+		void exitRecordingChrome();
 		session = null;
 	}
 
@@ -110,6 +121,9 @@
 	{:else if currentView === 'countdown'}
 		<CountdownOverlay value={recorder.countdownValue} />
 	{:else if currentView === 'recording'}
+		<!-- Nothing else renders here: the window itself shrinks to the size of
+		     this bar, so anything behind it would just be a black rectangle
+		     sitting over whatever the user is recording. -->
 		<FloatingControls
 			isPaused={recorder.isPaused}
 			elapsedTime={recorder.formattedTime}

@@ -1,6 +1,7 @@
 mod capture;
 mod ffmpeg;
 mod permissions;
+mod portal;
 mod preview;
 mod projects;
 mod scratch;

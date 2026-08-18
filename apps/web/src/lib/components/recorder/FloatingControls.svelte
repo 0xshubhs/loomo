@@ -109,7 +109,9 @@
 <style>
 	.floating-controls {
 		position: fixed;
-		bottom: 32px;
+		/* The desktop shrinks the window to roughly this bar's size while
+		   recording, so a 32px offset would push it out of view. */
+		bottom: 12px;
 		left: 50%;
 		transform: translateX(-50%) translateY(80px);
 		display: flex;
