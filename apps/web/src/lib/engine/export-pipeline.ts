@@ -8,6 +8,8 @@ import { DEFAULT_CLIP_FILTERS, DEFAULT_TRANSFORM, DEFAULT_CROP, DEFAULT_CHROMA_K
 import { hasNonDefaultFilters } from '$lib/utils/filter-presets.js';
 import { hasNonDefaultPosition } from '$lib/utils/pip-presets.js';
 import { chromaColorToFFmpegHex } from '$lib/utils/chroma-key.js';
+import type { Annotation } from '$lib/types/annotations.js';
+import { buildAnnotationOverlays, hasAnnotationOverlays } from './ffmpeg-annotations.js';
 import {
 	buildVideoEffectFilters,
 	buildMosaicSubgraph,
@@ -48,7 +50,8 @@ export async function exportTimeline(
 	onProgress: (progress: ExportProgress) => void,
 	getAssetFile: (assetId: string) => { file: File; name: string } | undefined,
 	shapeOverlays: ShapeOverlay[] = [],
-	captionTrack?: CaptionTrack
+	captionTrack?: CaptionTrack,
+	annotations: Annotation[] = []
 ): Promise<Blob> {
 	const startTime = Date.now();
 
@@ -89,7 +92,8 @@ export async function exportTimeline(
 	const hasMosaicRegions = sortedClips.some(hasMosaics);
 	const hasSpeedCurves = sortedClips.some(hasSpeedCurve);
 	const hasAnimation = sortedClips.some(hasAnyKeyframes);
-	const hasEffects = textOverlays.length > 0 || shapeOverlays.length > 0 || transitions.length > 0 || hasClipFilters || hasClipTransforms || hasChromaKey || hasReversed || hasPipPositions || hasAudioFades || hasNoiseSuppression || hasSpeedChanges || hasCaptions || hasMotionEffects || hasMosaicRegions || hasSpeedCurves || hasAnimation;
+	const hasDrawings = hasAnnotationOverlays(annotations);
+	const hasEffects = textOverlays.length > 0 || shapeOverlays.length > 0 || transitions.length > 0 || hasClipFilters || hasClipTransforms || hasChromaKey || hasReversed || hasPipPositions || hasAudioFades || hasNoiseSuppression || hasSpeedChanges || hasCaptions || hasMotionEffects || hasMosaicRegions || hasSpeedCurves || hasAnimation || hasDrawings;
 	const outputFile = `output.${config.format}`;
 
 	const targetRes = RESOLUTION_MAP[config.resolution];
@@ -117,7 +121,7 @@ export async function exportTimeline(
 	if (hasEffects) {
 		// Strategy C: filter_complex — text overlays or transitions need all clips
 		blob = await exportFilterComplex(
-			ffmpeg, sortedClips, textOverlays, shapeOverlays, config, targetWidth, targetHeight, outputFile, getAssetFile, progress, captionTrack
+			ffmpeg, sortedClips, textOverlays, shapeOverlays, config, targetWidth, targetHeight, outputFile, getAssetFile, progress, captionTrack, annotations
 		);
 	} else if (!needsScale && sortedClips.length === 1) {
 		// Strategy A: Single clip, source resolution — stream copy
@@ -486,7 +490,8 @@ async function exportFilterComplex(
 	outputFile: string,
 	getAssetFile: (id: string) => { file: File; name: string } | undefined,
 	progress: (stage: ExportProgress['stage'], p: number) => void,
-	captionTrack?: CaptionTrack
+	captionTrack?: CaptionTrack,
+	annotations: Annotation[] = []
 ): Promise<Blob> {
 	// Write all source files (dedup by assetId)
 	const inputPaths: string[] = [];
@@ -771,6 +776,21 @@ async function exportFilterComplex(
 			filterParts.push(`[${videoOut}]${strokeBox}[${strokeLabel}]`);
 			videoOut = strokeLabel;
 		}
+	}
+
+	// Drawings composite above everything else, matching what the preview
+	// shows: the annotation layer sits on top of the overlay canvas.
+	const annotationOverlays = await buildAnnotationOverlays(annotations, width, height, {
+		inputLabel: videoOut,
+		firstInputIndex: inputPaths.length,
+	});
+	if (annotationOverlays.filters.length > 0) {
+		for (const image of annotationOverlays.images) {
+			await ffmpeg.writeFile(image.name, await image.blob.arrayBuffer());
+		}
+		args.push(...annotationOverlays.inputArgs);
+		filterParts.push(...annotationOverlays.filters);
+		videoOut = annotationOverlays.outputLabel;
 	}
 
 	// sendcmd opens these by name relative to the working directory, so they

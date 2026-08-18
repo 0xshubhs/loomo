@@ -1,4 +1,10 @@
+import { createAnnotationToolState, type AnnotationToolState } from '$lib/types/annotations.js';
 export class UIStore {
+	// Drawing tools, shared between the annotation panel (which arms a tool)
+	// and the preview layer (which is inert until one is armed).
+	annotationTools = $state<AnnotationToolState>(createAnnotationToolState());
+	selectedAnnotationId = $state<string | null>(null);
+
 	timelineZoom = $state<number>(100);
 	timelineScrollX = $state<number>(0);
 	timelineScrollY = $state<number>(0);

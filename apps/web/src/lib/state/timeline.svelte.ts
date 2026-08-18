@@ -1,5 +1,6 @@
 import type { Track, Clip } from '$lib/types/index.js';
 import type { Transition, TextOverlay, ShapeOverlay } from '$lib/types/index.js';
+import type { Annotation } from '$lib/types/annotations.js';
 import { generateId } from '$lib/utils/id.js';
 
 export class TimelineStore {
@@ -7,6 +8,12 @@ export class TimelineStore {
 	transitions = $state<Transition[]>([]);
 	textOverlays = $state<TextOverlay[]>([]);
 	shapeOverlays = $state<ShapeOverlay[]>([]);
+	/**
+	 * Freehand drawings over the frame. They sit on the timeline rather than on
+	 * a clip because a stroke commonly spans a cut, and re-parenting it every
+	 * time the clip beneath is split or moved would lose it.
+	 */
+	annotations = $state<Annotation[]>([]);
 
 	get totalDuration(): number {
 		if (this.tracks.length === 0) return 0;
@@ -46,6 +53,10 @@ export class TimelineStore {
 
 	getClipTrack(clipId: string): Track | undefined {
 		return this.tracks.find((t) => t.clips.some((c) => c.id === clipId));
+	}
+
+	getAnnotationById(id: string): Annotation | undefined {
+		return this.annotations.find((a) => a.id === id);
 	}
 
 	addTrack(type: 'video' | 'audio', name?: string): Track {
@@ -165,5 +176,6 @@ export class TimelineStore {
 		this.transitions = [];
 		this.textOverlays = [];
 		this.shapeOverlays = [];
+		this.annotations = [];
 	}
 }

@@ -14,6 +14,7 @@
 	import { loadClipAudio, NativeAudioPlayer } from '$lib/engine/native-audio.js';
 	import { NativePreviewStream, nativeFrameAt } from '$lib/engine/native-preview.js';
 	import TransportControls from './TransportControls.svelte';
+	import AnnotationLayer from './AnnotationLayer.svelte';
 	import type { Clip } from '$lib/types/index.js';
 
 	interface Props {
@@ -774,6 +775,12 @@
 			></video>
 			<canvas class="chroma-key-canvas" bind:this={chromaCanvas} style="display: none;"></canvas>
 			<canvas class="text-overlay" bind:this={overlayCanvas}></canvas>
+			<!-- Sits above the frame and the overlays; ignores pointer events
+			     entirely until a drawing tool is armed in the panel. -->
+			<AnnotationLayer
+				tools={ui.annotationTools}
+				onselect={(id) => (ui.selectedAnnotationId = id)}
+			/>
 			{#if timeline.tracks.length === 0}
 				<div class="empty-state">
 					<p>Import media and add clips to the timeline to preview</p>

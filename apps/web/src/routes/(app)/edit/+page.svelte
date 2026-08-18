@@ -109,7 +109,8 @@
 					return { file: asset.file, name: asset.name };
 				},
 				timeline.shapeOverlays,
-				captions.captionTrack
+				captions.captionTrack,
+				timeline.annotations
 			);
 
 			// Ask where to put it. On the desktop this is a real Save dialog and

@@ -7,10 +7,12 @@
 	import KeyframePanel from './KeyframePanel.svelte';
 	import MosaicPanel from './MosaicPanel.svelte';
 	import SpeedCurvePanel from './SpeedCurvePanel.svelte';
+	import AnnotationPanel from './AnnotationPanel.svelte';
 	import AudioMixer from './AudioMixer.svelte';
 
 	const selection = getSelection();
 	const timeline = getTimeline();
+	const ui = getUI();
 
 	let selectedClip = $derived.by(() => {
 		const ids = Array.from(selection.selectedClipIds);
@@ -59,6 +61,15 @@
 				<p>Select a clip, transition, text, or shape overlay to edit its properties</p>
 			</div>
 		{/if}
+
+		<div class="section-divider"></div>
+		<!-- Not tied to a clip: drawings live on the timeline, so the panel is
+		     always available rather than appearing only with a selection. -->
+		<AnnotationPanel
+			tools={ui.annotationTools}
+			selectedId={ui.selectedAnnotationId}
+			onselect={(id) => (ui.selectedAnnotationId = id)}
+		/>
 
 		<div class="section-divider"></div>
 		<AudioMixer />
