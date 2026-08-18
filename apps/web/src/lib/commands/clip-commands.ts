@@ -789,3 +789,76 @@ export class TrimToPlayheadCommand implements Command {
 		this.timeline.tracks = [...this.timeline.tracks];
 	}
 }
+
+/**
+ * Changes a clip's playback speed and retimes it on the timeline.
+ *
+ * Speed is not just a playback flag: at 1.5x a 76-second clip occupies 51
+ * seconds of timeline, so the clip's duration has to shrink and everything
+ * after it on the track has to move up. Without that ripple, speeding a clip
+ * leaves a hole and slowing one makes it overlap its neighbour.
+ *
+ * `sourceEnd - sourceStart` stays fixed — the same frames play, just faster.
+ */
+export class SetClipSpeedCommand implements Command {
+	readonly type = 'set-clip-speed';
+	readonly description: string;
+
+	private previousSpeed = 1;
+	private previousDuration = 0;
+	private rippled = new Map<string, number>();
+
+	constructor(
+		private timeline: TimelineStore,
+		private clipId: string,
+		private speed: number,
+		/** Off for a single clip in isolation, e.g. when the user is nudging a slider. */
+		private ripple = true
+	) {
+		this.description = `Set speed ${speed}x`;
+	}
+
+	execute(): void {
+		const clip = this.timeline.getClipById(this.clipId);
+		if (!clip) throw new Error(`Clip ${this.clipId} not found`);
+
+		const speed = Math.min(Math.max(this.speed, 0.1), 16);
+		this.previousSpeed = clip.speed;
+		this.previousDuration = clip.duration;
+
+		const sourceLength = clip.sourceEnd - clip.sourceStart;
+		const newDuration = sourceLength / speed;
+		const delta = newDuration - clip.duration;
+
+		clip.speed = speed;
+		clip.duration = newDuration;
+
+		this.rippled.clear();
+		if (this.ripple && Math.abs(delta) > 0.0001) {
+			const track = this.timeline.getClipTrack(this.clipId);
+			const clipEnd = clip.timelineStart + this.previousDuration;
+			for (const other of track?.clips ?? []) {
+				// Only what sat after the clip's old end moves.
+				if (other.id === clip.id || other.timelineStart < clipEnd - 0.0001) continue;
+				this.rippled.set(other.id, other.timelineStart);
+				other.timelineStart = Math.max(0, other.timelineStart + delta);
+			}
+		}
+
+		this.timeline.tracks = [...this.timeline.tracks];
+	}
+
+	undo(): void {
+		const clip = this.timeline.getClipById(this.clipId);
+		if (!clip) return;
+		clip.speed = this.previousSpeed;
+		clip.duration = this.previousDuration;
+
+		const track = this.timeline.getClipTrack(this.clipId);
+		for (const other of track?.clips ?? []) {
+			const previous = this.rippled.get(other.id);
+			if (previous !== undefined) other.timelineStart = previous;
+		}
+		this.timeline.tracks = [...this.timeline.tracks];
+	}
+}

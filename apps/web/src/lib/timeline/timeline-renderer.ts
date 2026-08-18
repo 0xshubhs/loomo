@@ -15,6 +15,8 @@ export interface RenderState {
 	selectedTransitionId: string | null;
 	duration: number;
 	snapLine: number | null;
+	/** Clip under the cursor, so trim handles can be shown before selecting. */
+	hoveredClipId?: string | null;
 }
 
 const COLORS = {
@@ -320,12 +322,38 @@ export class TimelineRenderer {
 			ctx.fillText(displayName, x + 6, trackY + 5, maxTextWidth);
 		}
 
-		// Trim handles
-		if (isSelected) {
+		// Trim handles.
+		//
+		// These used to be 3px slivers at 0.6 alpha shown only once a clip was
+		// selected, so the edges looked like plain borders and trimming was
+		// effectively undiscoverable. They are now solid, grip-marked, and
+		// appear on hover — before the user has committed to a selection.
+		const isHovered = state.hoveredClipId === clip.id;
+		if ((isSelected || isHovered) && w > 18) {
+			const handleWidth = 7;
+			const inset = 2;
+			const handleHeight = TRACK_HEIGHT - inset * 2;
+
 			ctx.fillStyle = COLORS.trimHandle;
-			ctx.globalAlpha = 0.6;
-			ctx.fillRect(x + 1, trackY + 2, 3, TRACK_HEIGHT - 4);
-			ctx.fillRect(x + w - 4, trackY + 2, 3, TRACK_HEIGHT - 4);
+			ctx.globalAlpha = isSelected ? 0.95 : 0.6;
+
+            const roundedRect = (hx: number) => {
+				ctx.beginPath();
+				ctx.roundRect(hx, trackY + inset, handleWidth, handleHeight, 2);
+				ctx.fill();
+			};
+			roundedRect(x + 1);
+			roundedRect(x + w - handleWidth - 1);
+
+			// Grip marks read as "draggable" the way a plain bar does not.
+			ctx.globalAlpha = isSelected ? 0.5 : 0.35;
+			ctx.fillStyle = '#000000';
+			const gripTop = trackY + TRACK_HEIGHT / 2 - 5;
+			for (const hx of [x + 1, x + w - handleWidth - 1]) {
+				ctx.fillRect(hx + 2, gripTop, 1, 10);
+				ctx.fillRect(hx + 4, gripTop, 1, 10);
+			}
+
 			ctx.globalAlpha = 1;
 		}
 	}

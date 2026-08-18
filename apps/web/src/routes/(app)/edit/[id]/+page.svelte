@@ -3,7 +3,8 @@
 	import { getTimeline, getPlayback, getMediaLibrary, getUI, getSelection, getCommands, getCaptions } from '$lib/state/context.js';
 	import { createFFmpegEngine } from '$lib/engine/ffmpeg-engine.js';
 	import { importMediaFile } from '$lib/engine/media-import.js';
-	import { exportTimeline, downloadBlob } from '$lib/engine/export-pipeline.js';
+	import { exportTimeline } from '$lib/engine/export-pipeline.js';
+	import { saveOutput } from '$lib/desktop/save.js';
 	import { matchShortcut } from '$lib/utils/keyboard.js';
 	import { SplitClipCommand, RemoveClipCommand, PasteClipsCommand, DuplicateClipsCommand, RemoveGapsCommand } from '$lib/commands/clip-commands.js';
 	import { AddTextOverlayCommand } from '$lib/commands/text-commands.js';
@@ -107,9 +108,19 @@
 				captions.captionTrack
 			);
 
-			downloadBlob(blob, `export.${config.format}`);
+			// Ask where to put it. On the desktop this is a real Save dialog and
+			// the bytes are copied natively; on the web it falls back to a
+			// browser download. Dropping the file into ~/Downloads unannounced
+			// is not a reasonable end to a render that took minutes.
+			const suggested = `loomo-export.${config.format}`;
+			const saved = await saveOutput({ suggestedName: suggested, blob });
+
 			ui.showExportDialog = false;
 			exportProgress = null;
+			if (saved.saved && saved.path) {
+				importStatus = `Saved to ${saved.path}`;
+				setTimeout(() => { importStatus = null; }, 8000);
+			}
 		} catch (err) {
 			console.error('Export failed:', err);
 			importError = `Export failed: ${err}`;

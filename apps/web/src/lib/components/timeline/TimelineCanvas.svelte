@@ -32,6 +32,7 @@
 	const mediaLibrary = getMediaLibrary();
 
 	let contextMenu = $state<{ x: number; y: number; items: MenuEntry[] } | null>(null);
+	let hoveredClipId: string | null = null;
 
 	let canvasEl: HTMLCanvasElement;
 	let renderer: TimelineRenderer;
@@ -77,6 +78,7 @@
 			selectedTransitionId: selection.selectedTransitionId,
 			duration: timeline.totalDuration,
 			snapLine: dragState.snapTime,
+			hoveredClipId,
 		});
 	}
 
@@ -120,6 +122,19 @@
 				ui.timelineScrollX, ui.timelineScrollY,
 				renderer.trackHeight, renderer.trackGap, renderer.rulerHeight
 			);
+
+			// Surface the trim handles for whatever the cursor is over.
+			const time = Math.max(0, (x + ui.timelineScrollX) / ui.pixelsPerSecond);
+			const trackIndex = getTrackIndexFromY(
+				y, renderer.trackHeight, renderer.trackGap, renderer.rulerHeight,
+				ui.timelineScrollY, timeline.tracks.length
+			);
+			const track = timeline.tracks[trackIndex];
+			const nextHovered = track ? (clipAt(track, time)?.id ?? null) : null;
+			if (nextHovered !== hoveredClipId) {
+				hoveredClipId = nextHovered;
+				updateRenderer();
+			}
 			return;
 		}
 
@@ -333,7 +348,10 @@
 	onmousedown={onMouseDown}
 	onmousemove={onMouseMove}
 	onmouseup={onMouseUp}
-	onmouseleave={() => { if (dragState.mode !== 'none') onMouseUp(new MouseEvent('mouseup')); }}
+	onmouseleave={() => {
+		if (dragState.mode !== 'none') onMouseUp(new MouseEvent('mouseup'));
+		if (hoveredClipId !== null) { hoveredClipId = null; updateRenderer(); }
+	}}
 	onwheel={onWheel}
 	ondrop={onDrop}
 	ondragover={onDragOver}

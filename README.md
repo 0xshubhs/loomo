@@ -1,0 +1,215 @@
+# Loomo
+
+A screen recorder and multi-track video editor. Runs in the browser and as a
+native desktop app on Linux, macOS and Windows.
+
+```
+apps/web/         SvelteKit 5 frontend — recorder, editor, dashboard, share
+apps/desktop/     Tauri 2 shell — native FFmpeg, offline projects, installers
+apps/backend/     Go API + workers — transcode, thumbnails, transcription
+apps/extension/   Chrome extension (Manifest V3)
+packages/shared/  Shared types and constants
+```
+
+**Stack:** SvelteKit 2 + Svelte 5 (runes) · Tauri 2 (Rust) · Go (Chi, pgx,
+sqlc, River) · PostgreSQL · Redis · Cloudflare R2 / MinIO · FFmpeg · HLS.js
+
+---
+
+## Quick start
+
+### Web
+
+```bash
+bun install
+make dev          # web + backend + docker infra
+```
+
+### Desktop
+
+```bash
+sudo apt install libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev \
+  libsoup-3.0-dev libxdo-dev libssl-dev librsvg2-dev \
+  libayatana-appindicator3-dev patchelf build-essential pkg-config file
+
+make desktop-setup   # once: fetch ffmpeg sidecars, generate icons
+make desktop-dev     # hot-reload dev build
+make desktop-build   # release installers
+```
+
+Installers land in `apps/desktop/src-tauri/target/release/bundle/`.
+
+**Linux also needs media codecs.** The `.deb` declares them, but a build tree
+does not:
+
+```bash
+sudo apt install gstreamer1.0-libav gstreamer1.0-plugins-good \
+  gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly
+```
+
+Verify with `gst-inspect-1.0 avdec_h264`. Without it nothing MP4 will play.
+
+---
+
+## Building installers
+
+| Host | Produces |
+|------|----------|
+| Linux | `.deb`, `.rpm`, `.AppImage` |
+| macOS | `.dmg`, `.app` |
+| Windows | `.exe` (NSIS), `.msi` |
+
+**These cannot be cross-built.** Apple's toolchain only runs on macOS and MSVC
+only on Windows. Push a `v*` tag and
+`.github/workflows/desktop-release.yml` fans out across three runners.
+
+---
+
+## Features
+
+### Recording
+Screen + camera, screen only, camera only, audio only. 1080p/720p/480p,
+H.264 preferred, camera bubble composited on a canvas. On the desktop,
+capture goes through FFmpeg (x11grab / avfoundation / gdigrab) and falls
+back to the browser recorder when unavailable — a Wayland session, for
+instance, which the app detects and explains.
+
+### Editing
+Multi-track timeline, trim, split, transitions, 12 filter presets plus 8
+manual adjustments, crop, rotate/flip, chroma key, PiP positioning, groups,
+markers, silence removal, AI voiceover, auto-captions.
+
+**Clip speed** — presets from 0.25x to 4x plus a slider. Changing speed
+retimes the clip and ripples the rest of the track, and the panel shows the
+resulting timeline duration, so a 76s clip at 1.5x reads as 51s.
+
+**Keyframes** — nine animatable properties (position X/Y, scale, rotation,
+opacity, volume, brightness, contrast, saturation) with five easings.
+
+**Speed curves** — multi-point ramps with a log-scale graph and presets.
+
+**Mosaic** — pixelate or blur regions, optionally time-limited.
+
+**Right-click** anywhere on the timeline for what applies there: split, trim
+to playhead, duplicate, detach audio, delete on a clip; close this gap, the
+track's gaps, or all gaps on empty space; add tracks on blank area.
+
+### Media library
+Local import, Pexels photos and video, Giphy, and a **music and sound-effects
+library** via Openverse. Audio defaults to CC0 only; an opt-in tier adds CC BY
+and the required credit is stored with the asset and surfaced at export.
+Licences that forbid commercial use or derivatives are never requested.
+
+### Export
+MP4, WebM, MKV, AVI, MOV, GIF, M4A up to 4K. Native FFmpeg on the desktop,
+ffmpeg.wasm on the web. Progress shows a stage, a projected time remaining
+and elapsed time, and the finished file goes wherever you choose through a
+real Save dialog.
+
+---
+
+## Architecture notes
+
+### One editor, two engines
+
+`FFmpegEngine` (`apps/web/src/lib/engine/ffmpeg-engine.ts`) is the seam.
+`FFmpegBridge` runs ffmpeg.wasm in a worker for the web;
+`NativeFFmpegEngine` drives the bundled binary on the desktop.
+`createFFmpegEngine()` picks by detecting Tauri.
+
+The editor was written against ffmpeg.wasm's MEMFS, so it passes bare virtual
+filenames. Natively we give FFmpeg a real scratch directory and set its
+working directory there — the same argv works untouched.
+
+### The preview does not use the webview's video player
+
+This is the most important design decision in the desktop app, and it was
+forced. On Linux the webview failed three different ways on one machine:
+
+- WebKitGTK composited `<video>` as solid black on a hybrid NVIDIA GPU
+- disabling DMABuf to fix that dropped it to software compositing far too
+  slow to edit against
+- ordinary MP4s intermittently wedged the element at `readyState 0`, with no
+  error on either side
+
+Decoding is unaffected by any of this — `drawImage` returns correct pixels
+even when the element shows black, which is why thumbnails always worked. So
+the preview decodes with the bundled FFmpeg and paints onto a canvas: a
+realtime-paced MJPEG stream during playback, single-frame decodes while
+scrubbing. Audio is extracted as PCM and played through Web Audio, resynced
+when it drifts past 0.3s. The media element holds no remaining responsibility.
+
+### Keyframes compile to FFmpeg expressions
+
+Curves become nested `if(lt(t,…),…)` expressions evaluated per frame —
+`eval=frame` on `eq`/`scale`/`volume`, expressions on `rotate` and `overlay`.
+Opacity has no expression-capable filter, so it rides a generated `sendcmd`
+script instead. Expressions are always single-quoted; FFmpeg reads an
+unquoted comma as a filter separator and the graph fails.
+
+Preview and export are separate renderers, so every effect is implemented
+twice. A miniature FFmpeg-expression evaluator in the tests asserts the two
+agree; without it they drift and the only symptom is an export that quietly
+differs from what you approved.
+
+---
+
+## Testing
+
+```bash
+cd apps/web && bun run test     # ~400 tests
+cd apps/web && bun run check    # typecheck, expects 0 errors
+cd apps/desktop/src-tauri && cargo test
+```
+
+FFmpeg-backed integration tests run the real binary — building filtergraphs,
+encoding actual MP4s and probing them with ffprobe. They skip automatically
+when no binary is present.
+
+---
+
+## Things that will bite you
+
+Every one of these cost real debugging time. They are documented because the
+symptoms point somewhere other than the cause.
+
+**WebKitGTK does not forward `console.*` to stderr.** Frontend logs are
+invisible from a terminal. Diagnostics route through a Tauri command to
+stderr and `~/.local/share/com.loomo.desktop/diagnostics.log`.
+
+**A Tauri channel is a JSON transport.** Raw byte payloads sent over one never
+arrive, silently. Frames are base64.
+
+**`preload="auto"` wedges WebKitGTK** on large blob URLs — `readyState 0`,
+`networkState 2`, forever, no error. Use `preload="metadata"`.
+
+**`dragDropEnabled` must stay false.** wry installs its own drop handler on
+the webview and swallows the file drop before the page's HTML5 `drop` fires.
+
+**Native `<select>` ignores CSS `color` on GTK.** Without `appearance: none`
+every dropdown renders unreadable.
+
+**Sidecars are named `loomo-ffmpeg`.** Tauri installs them beside the binary,
+which in a `.deb` is `/usr/bin` — a sidecar called `ffmpeg` collides with the
+distro package and dpkg refuses the install.
+
+**An effect that reads and writes the same `$state` kills the whole UI.**
+Svelte throws `effect_update_depth_exceeded` and tears down the effect tree;
+everything silently stops re-rendering. Wrap the write in `untrack`.
+
+**Decode pacing must match consumption.** Decoding preview frames faster than
+realtime overruns the queue, trimming discards the oldest frames — exactly the
+ones due next — and playback freezes after about a second.
+
+---
+
+## Licensing
+
+The bundled FFmpeg builds are **GPL**. Distributing Loomo with them means
+complying with the GPL. For a proprietary build, switch
+`apps/desktop/scripts/fetch-ffmpeg.mjs` to LGPL builds and drop the GPL-only
+encoders.
+
+Openverse audio is Creative Commons. The default tier is CC0 (no attribution);
+the opt-in tier adds CC BY, whose credit is tracked per asset and shown at
+export.

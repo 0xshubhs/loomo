@@ -5,7 +5,7 @@
 	import type { ChromaKey } from '$lib/types/timeline.js';
 	import { getTimeline, getCommands } from '$lib/state/context.js';
 	import { SetVolumeCommand, SetClipFadeInCommand, SetClipFadeOutCommand, SetNoiseSuppressionCommand, DetachAudioCommand } from '$lib/commands/audio-commands.js';
-	import { SetClipFiltersCommand, SetClipTransformCommand, SetClipCropCommand, SetChromaKeyCommand, SetClipReversedCommand, SetClipPositionCommand, SetVideoEffectCommand } from '$lib/commands/clip-commands.js';
+	import { SetClipFiltersCommand, SetClipTransformCommand, SetClipCropCommand, SetChromaKeyCommand, SetClipReversedCommand, SetClipPositionCommand, SetVideoEffectCommand, SetClipSpeedCommand } from '$lib/commands/clip-commands.js';
 	import { VIDEO_EFFECT_LIST, type VideoEffectType } from '$lib/types/effects.js';
 	import { formatDuration } from '$lib/utils/time.js';
 	import { FILTER_PRESETS, applyPreset, hasNonDefaultFilters } from '$lib/utils/filter-presets.js';
@@ -175,6 +175,18 @@
 	let showPosition = $derived(clip.type === 'video' || clip.type === 'image');
 	let showEffects = $derived(clip.type === 'video');
 
+	const SPEED_PRESETS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 4];
+
+	/** Source length is fixed; only how long it occupies the timeline changes. */
+	let sourceLength = $derived(Math.max(0, clip.sourceEnd - clip.sourceStart));
+	let speedDuration = $derived(clip.speed > 0 ? sourceLength / clip.speed : sourceLength);
+
+	function handleSpeedChange(value: number) {
+		const speed = Math.round(Math.min(Math.max(value, 0.1), 16) * 100) / 100;
+		if (Math.abs(speed - clip.speed) < 0.001) return;
+		commands.execute(new SetClipSpeedCommand(timeline, clip.id, speed));
+	}
+
 	function handleVideoEffectClick(effectType: VideoEffectType) {
 		const intensity = clip.videoEffect?.intensity ?? 50;
 		commands.execute(new SetVideoEffectCommand(timeline, clip.id, { type: effectType, intensity }));
@@ -221,13 +233,37 @@
 	</div>
 
 	<div class="prop-section">
+		<!-- The slider here had no change handler at all: it displayed the speed
+		     and silently discarded every adjustment. -->
+		<div class="speed-header">
+			<span class="prop-label">Speed</span>
+			<span class="speed-value">{clip.speed}x</span>
+		</div>
+
+		<div class="speed-presets">
+			{#each SPEED_PRESETS as preset}
+				<button
+					class="speed-preset"
+					class:active={Math.abs(clip.speed - preset) < 0.001}
+					onclick={() => handleSpeedChange(preset)}
+				>{preset}x</button>
+			{/each}
+		</div>
+
 		<Slider
-			label="Speed"
+			label=""
 			value={clip.speed}
 			min={0.1}
-			max={16}
-			step={0.1}
+			max={4}
+			step={0.05}
+			oninput={handleSpeedChange}
 		/>
+
+		<div class="speed-duration">
+			<span>{formatDuration(sourceLength)} at 1x</span>
+			<span class="arrow">→</span>
+			<span class="speed-result">{formatDuration(speedDuration)} on the timeline</span>
+		</div>
 		{#if clip.type === 'video'}
 			<div class="reverse-row">
 				<span class="prop-label">Reverse</span>
@@ -904,6 +940,67 @@
 
 	.crop-input input:focus {
 		border-color: var(--accent);
+	}
+
+	.speed-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		margin-bottom: 6px;
+	}
+
+	.speed-value {
+		font-size: 11px;
+		font-weight: 600;
+		color: var(--text-primary);
+		font-variant-numeric: tabular-nums;
+	}
+
+	.speed-presets {
+		display: grid;
+		grid-template-columns: repeat(4, 1fr);
+		gap: 4px;
+		margin-bottom: 8px;
+	}
+
+	.speed-preset {
+		font-size: 10px;
+		padding: 4px 2px;
+		cursor: pointer;
+		background: var(--bg-surface);
+		color: var(--text-secondary);
+		border: 1px solid var(--border-primary);
+		border-radius: 4px;
+	}
+
+	.speed-preset:hover {
+		background: rgba(255, 255, 255, 0.08);
+		color: var(--text-primary);
+	}
+
+	.speed-preset.active {
+		background: rgba(255, 51, 51, 0.16);
+		color: #ff5555;
+		border-color: rgba(255, 51, 51, 0.4);
+	}
+
+	.speed-duration {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		flex-wrap: wrap;
+		margin-top: 6px;
+		font-size: 10px;
+		color: var(--text-tertiary);
+		font-variant-numeric: tabular-nums;
+	}
+
+	.speed-duration .arrow {
+		opacity: 0.6;
+	}
+
+	.speed-result {
+		color: var(--text-primary);
 	}
 
 	.reverse-row {
