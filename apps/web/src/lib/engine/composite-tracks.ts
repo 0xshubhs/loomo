@@ -128,7 +128,9 @@ export function buildCompositeFilter(
 		const box = geometryFor(clip, width, height);
 
 		const chain = [
-			`scale=${box.width}:${box.height}:force_original_aspect_ratio=decrease`,
+			// lanczos here too: an overlay scaled up with the default bicubic is
+			// visibly softer than the frame it sits on.
+			`scale=${box.width}:${box.height}:force_original_aspect_ratio=decrease:flags=lanczos`,
 			// Reset then shift, so the clip's own start offset does not leak in.
 			`setpts=PTS-STARTPTS+${start.toFixed(3)}/TB`,
 		];

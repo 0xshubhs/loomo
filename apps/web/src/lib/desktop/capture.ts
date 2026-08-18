@@ -63,13 +63,34 @@ const UNAVAILABLE: CaptureCapabilities = {
  * should fall back to the browser's `getDisplayMedia` recorder. `reason`
  * explains which case it is.
  */
+let cachedCapabilities: CaptureCapabilities | null = null;
+
 export async function captureCapabilities(): Promise<CaptureCapabilities> {
-	if (!isDesktop()) return UNAVAILABLE;
+	if (cachedCapabilities) return cachedCapabilities;
+	if (!isDesktop()) return (cachedCapabilities = UNAVAILABLE);
 	try {
-		return await invoke<CaptureCapabilities>('capture_capabilities');
+		return (cachedCapabilities = await invoke<CaptureCapabilities>('capture_capabilities'));
 	} catch (error) {
-		return { ...UNAVAILABLE, reason: String(error) };
+		return (cachedCapabilities = { ...UNAVAILABLE, reason: String(error) });
 	}
+}
+
+/**
+ * The answer if it has already been fetched, without awaiting.
+ *
+ * Starting a recording must not await anything before `getDisplayMedia`: the
+ * browser only honours it inside the click that triggered it, and a single
+ * intervening await is enough for WebKit to refuse with "must be called from a
+ * user gesture handler". The recorder screen warms this on mount so the click
+ * path can stay synchronous.
+ */
+export function knownCaptureCapabilities(): CaptureCapabilities | null {
+	return cachedCapabilities;
+}
+
+/** Fetches capabilities ahead of time, so the start click does not have to. */
+export function prefetchCaptureCapabilities(): void {
+	void captureCapabilities();
 }
 
 /** Screens and audio inputs the native backend can record. */

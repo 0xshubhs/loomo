@@ -5,7 +5,8 @@
 	import CountdownOverlay from './CountdownOverlay.svelte';
 	import PostRecordPanel from './PostRecordPanel.svelte';
 	import CameraBubble from './CameraBubble.svelte';
-	import { createRecordingSession, type AnyRecordingSession } from '$lib/recorder/create-session.js';
+	import { createRecordingSessionSync, createRecordingSession, type AnyRecordingSession } from '$lib/recorder/create-session.js';
+	import { prefetchCaptureCapabilities } from '$lib/desktop/capture.js';
 	import { onMount } from 'svelte';
 
 	const recorder = getRecorder();
@@ -32,10 +33,29 @@
 
 	onMount(() => {
 		recorder.enumerateDevices();
+		// Warmed here so the start click never has to await: screen capture is
+		// only granted inside the gesture that asked for it.
+		prefetchCaptureCapabilities();
 	});
 
 	async function handleStart() {
-		const choice = await createRecordingSession(recorder);
+		// No await before session.start(). One is enough for WebKit to decide
+		// the click is over and refuse getDisplayMedia.
+		const choice = createRecordingSessionSync(recorder);
+		if (!choice) {
+			// Capabilities have not arrived yet, which is only possible if the
+			// user clicked within a moment of the screen opening.
+			const resolved = await createRecordingSession(recorder);
+			session = resolved.session;
+			captureNotice = resolved.notice;
+			try {
+				await session.start();
+			} catch (err) {
+				console.error('Recording failed:', err);
+			}
+			return;
+		}
+
 		session = choice.session;
 		captureNotice = choice.notice;
 		try {

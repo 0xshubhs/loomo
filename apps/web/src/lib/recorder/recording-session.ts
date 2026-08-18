@@ -19,12 +19,19 @@ export class RecordingSession {
 
   constructor(private store: RecorderStore) {}
 
+  /**
+   * Begins recording.
+   *
+   * Capture is requested before the countdown, not after. `getDisplayMedia`
+   * is only honoured inside the gesture that triggered it, and a three-second
+   * countdown is more than enough for the browser to decide the click is over
+   * — on Wayland this failed every time with "getDisplayMedia must be called
+   * from a user gesture handler". Asking first is also the order every other
+   * recorder uses: pick the screen, then watch the countdown.
+   */
   async start(): Promise<void> {
     const { mode, quality, selectedCameraId, selectedMicId, systemAudioEnabled } = this.store;
     const { width, height } = QUALITY_MAP[quality];
-
-    this.store.startCountdown();
-    await this.countdown();
 
     try {
       let outputStream: MediaStream;
@@ -78,6 +85,11 @@ export class RecordingSession {
           outputStream = this.mergeStreams([screenStream], audioStreams);
         }
       }
+
+      // Streams are live; now hold for the countdown so the recording starts
+      // when the user expects it to.
+      this.store.startCountdown();
+      await this.countdown();
 
       // Create MediaRecorder with best available codec
       const mimeType = isAudioOnly ? this.getSupportedAudioMimeType() : this.getSupportedMimeType();
