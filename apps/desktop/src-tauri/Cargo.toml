@@ -27,6 +27,12 @@ tokio = { version = "1", features = ["sync", "time", "macros"] }
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"
 
+# Reaching the WebKitGTK view behind the Tauri window, to answer its
+# permission-request signal. Pinned to the version wry itself links, so both
+# refer to the same GObject types.
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = { version = "=2.0.2", features = ["v2_40"] }
+
 [profile.release]
 codegen-units = 1
 lto = true

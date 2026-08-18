@@ -182,6 +182,16 @@
 		</div>
 
 		<!-- Device selectors -->
+		{#if recorder.deviceError}
+			<!-- An empty dropdown reads as "you have no webcam", which is
+			     usually wrong. Say what actually happened, and offer the retry
+			     that fixes it once permission is granted. -->
+			<div class="device-error">
+				<span>{recorder.deviceError}</span>
+				<button class="retry" onclick={() => recorder.enumerateDevices()}>Try again</button>
+			</div>
+		{/if}
+
 		<div class="device-selectors">
 			{#if recorder.mode !== 'screen-only' && recorder.mode !== 'audio'}
 				<div class="section">
@@ -509,6 +519,36 @@
 	}
 
 	/* Device selectors */
+	.device-error {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+		padding: 10px 12px;
+		margin-bottom: 12px;
+		border: 1px solid rgba(255, 122, 89, 0.35);
+		border-radius: 8px;
+		background: rgba(255, 122, 89, 0.08);
+		color: var(--text-primary);
+		font-size: 12px;
+		line-height: 1.4;
+	}
+
+	.retry {
+		flex-shrink: 0;
+		padding: 4px 10px;
+		border: 1px solid var(--border-primary);
+		border-radius: 6px;
+		background: transparent;
+		color: var(--text-primary);
+		font-size: 11px;
+		cursor: pointer;
+	}
+
+	.retry:hover {
+		background: var(--bg-hover, rgba(255, 255, 255, 0.06));
+	}
+
 	.device-selectors {
 		width: 100%;
 	}

@@ -1,3 +1,4 @@
+import { scanDevices } from '$lib/recorder/devices.js';
 import type { RecordingMode, RecordingState, RecordingQuality, DeviceInfo, RecordingResult, CameraBubblePosition } from '$lib/types/recorder.js';
 
 export class RecorderStore {
@@ -82,28 +83,25 @@ export class RecorderStore {
     }
   }
 
+  /**
+   * Why the device list came back short, in the user's words rather than the
+   * browser's — `NotAllowedError` reads as "the user denied permission" even
+   * when no prompt was ever shown.
+   */
+  deviceError = $state<string | null>(null);
+
   async enumerateDevices() {
-    try {
-      // Need to request permissions first to get labels
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
-      stream.getTracks().forEach(t => t.stop());
+    const scan = await scanDevices(navigator.mediaDevices);
 
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      this.cameras = devices
-        .filter(d => d.kind === 'videoinput')
-        .map(d => ({ deviceId: d.deviceId, label: d.label || `Camera ${d.deviceId.slice(0, 4)}`, kind: 'videoinput' as const }));
-      this.microphones = devices
-        .filter(d => d.kind === 'audioinput')
-        .map(d => ({ deviceId: d.deviceId, label: d.label || `Microphone ${d.deviceId.slice(0, 4)}`, kind: 'audioinput' as const }));
+    this.cameras = scan.cameras;
+    this.microphones = scan.microphones;
+    this.deviceError = scan.error;
 
-      if (this.cameras.length > 0 && !this.selectedCameraId) {
-        this.selectedCameraId = this.cameras[0].deviceId;
-      }
-      if (this.microphones.length > 0 && !this.selectedMicId) {
-        this.selectedMicId = this.microphones[0].deviceId;
-      }
-    } catch (err) {
-      console.warn('Failed to enumerate devices:', err);
+    if (this.cameras.length > 0 && !this.selectedCameraId) {
+      this.selectedCameraId = this.cameras[0].deviceId;
+    }
+    if (this.microphones.length > 0 && !this.selectedMicId) {
+      this.selectedMicId = this.microphones[0].deviceId;
     }
   }
 }

@@ -1,5 +1,6 @@
 mod capture;
 mod ffmpeg;
+mod permissions;
 mod preview;
 mod projects;
 mod scratch;
@@ -35,6 +36,16 @@ pub fn run() {
             app.manage(ffmpeg::FfmpegState::default());
             app.manage(capture::CaptureState::default());
             app.manage(preview::PreviewState::default());
+
+            // WebKitGTK denies camera and microphone access unless the
+            // embedder answers for it. Without this the recorder finds no
+            // devices at all.
+            if let Some(window) = handle.get_webview_window("main") {
+                if let Err(error) = permissions::grant_media_access(&window) {
+                    eprintln!("[loomo] could not install media permission handler: {error}");
+                }
+            }
+
             Ok(())
         })
         .on_window_event(|window, event| {
