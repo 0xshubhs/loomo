@@ -1,6 +1,11 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { getTimeline, getPlayback, getMediaLibrary, getUI, getSelection, getCommands, getCaptions } from '$lib/state/context.js';
+	import { getTimeline, getPlayback, getMediaLibrary, getUI, getSelection, getCommands, getCaptions, getProject } from '$lib/state/context.js';
+	import { page } from '$app/state';
+	import { goto } from '$app/navigation';
+	import { isDesktop } from '$lib/desktop/env.js';
+	import { openProject, saveProject } from '$lib/project/store.js';
+	import { ProjectFormatError } from '$lib/project/document.js';
 	import { createFFmpegEngine } from '$lib/engine/ffmpeg-engine.js';
 	import { importMediaFile } from '$lib/engine/media-import.js';
 	import { exportTimeline } from '$lib/engine/export-pipeline.js';
@@ -39,16 +44,115 @@
 	let importError = $state<string | null>(null);
 	let importStatus = $state<string | null>(null);
 	let showShortcuts = $state(false);
+	let showSavePrompt = $state(false);
+	let saveError = $state<string | null>(null);
+
+	const project = getProject();
 
 	onMount(async () => {
 		appReady = true;
+		project.id = page.params.id ?? null;
+
 		try {
 			await ffmpeg.initialize();
 		} catch (err) {
 			console.warn('FFmpeg initialization failed:', err);
 			ffmpegError = `FFmpeg failed to load: ${err}. Video transcoding won't be available but native formats may still work.`;
 		}
+
+		await loadProject();
 	});
+
+	/**
+	 * Restores a saved project, if there is one under this id.
+	 *
+	 * A brand new project has an id and nothing written under it, so "not
+	 * found" is the ordinary case rather than an error.
+	 */
+	async function loadProject() {
+		if (!project.id || !isDesktop()) return;
+
+		try {
+			const opened = await openProject(project.id);
+
+			for (const asset of opened.assets) mediaLibrary.addAsset(asset);
+			timeline.tracks = opened.document.tracks;
+			timeline.transitions = opened.document.transitions;
+			timeline.textOverlays = opened.document.textOverlays;
+			timeline.shapeOverlays = opened.document.shapeOverlays;
+			timeline.annotations = opened.document.annotations;
+			if (opened.document.captions) captions.captionTrack = opened.document.captions;
+
+			project.name = opened.document.name;
+			project.markSaved(opened.document.savedAt);
+			commands.clear();
+			importStatus = `Opened "${opened.document.name}"`;
+			setTimeout(() => { importStatus = null; }, 4000);
+		} catch (err) {
+			// A project that has never been saved simply is not there.
+			if (err instanceof ProjectFormatError) {
+				saveError = err.message;
+			} else {
+				console.info('[project] nothing saved under this id yet:', err);
+			}
+		}
+	}
+
+	/** Writes the current state to disk, media and all. */
+	async function saveCurrentProject(): Promise<boolean> {
+		if (!isDesktop()) {
+			saveError = 'Projects are stored on disk and need the desktop app.';
+			return false;
+		}
+
+		project.saving = true;
+		saveError = null;
+		try {
+			await saveProject(
+				{
+					name: project.name,
+					assets: mediaLibrary.assets,
+					tracks: timeline.tracks,
+					transitions: timeline.transitions,
+					textOverlays: timeline.textOverlays,
+					shapeOverlays: timeline.shapeOverlays,
+					annotations: timeline.annotations,
+					captions: captions.captionTrack ?? null,
+					aspectRatio: project.aspectRatio.label,
+				},
+				{ id: project.id, now: Date.now() }
+			);
+			project.markSaved(Date.now());
+			importStatus = 'Project saved';
+			setTimeout(() => { importStatus = null; }, 4000);
+			return true;
+		} catch (err) {
+			console.error('Save failed:', err);
+			saveError = `Could not save the project: ${err}`;
+			return false;
+		} finally {
+			project.saving = false;
+		}
+	}
+
+	/** Leaving the editor: offer to save rather than dropping the work. */
+	async function handleLeave() {
+		if (project.dirty) {
+			showSavePrompt = true;
+			return;
+		}
+		await goto('/');
+	}
+
+	async function saveAndLeave() {
+		showSavePrompt = false;
+		if (await saveCurrentProject()) await goto('/');
+	}
+
+	async function discardAndLeave() {
+		showSavePrompt = false;
+		await goto('/');
+	}
 
 	onDestroy(() => {
 		ffmpeg.terminate();
@@ -282,7 +386,7 @@
 			}
 			case 'marker.add': break;
 			case 'shortcuts.show': showShortcuts = true; break;
-			case 'project.save': break;
+			case 'project.save': void saveCurrentProject(); break;
 			case 'export.open': ui.showExportDialog = true; break;
 			case 'project.new': handleNewProject(); break;
 			case 'preview.fullscreen':
@@ -350,6 +454,13 @@
 		</div>
 	{/if}
 
+	{#if saveError}
+		<div class="notification error">
+			<span>{saveError}</span>
+			<button onclick={() => saveError = null}>&times;</button>
+		</div>
+	{/if}
+
 	{#if importError}
 		<div class="notification error">
 			<span>{importError}</span>
@@ -371,7 +482,13 @@
 
 	<EditorLayout>
 		{#snippet topbar()}
-			<TopBar onimport={openFileDialog} onnewproject={handleNewProject} onshortcuts={() => showShortcuts = true} />
+			<TopBar
+				onimport={openFileDialog}
+				onnewproject={handleNewProject}
+				onshortcuts={() => showShortcuts = true}
+				onsave={() => void saveCurrentProject()}
+				onleave={() => void handleLeave()}
+			/>
 		{/snippet}
 
 		{#snippet mediaBrowser()}
@@ -400,6 +517,22 @@
 	</EditorLayout>
 
 	<ShortcutsModal bind:open={showShortcuts} />
+
+	{#if showSavePrompt}
+		<!-- Leaving with unsaved work is the one place the editor must not be
+		     quiet: there is no autosave, so closing without this loses the edit. -->
+		<div class="prompt-backdrop">
+			<div class="prompt">
+				<h3>Save this project?</h3>
+				<p>You have changes that have not been saved yet.</p>
+				<div class="prompt-actions">
+					<button class="prompt-btn ghost" onclick={() => (showSavePrompt = false)}>Cancel</button>
+					<button class="prompt-btn ghost" onclick={() => void discardAndLeave()}>Don't save</button>
+					<button class="prompt-btn primary" onclick={() => void saveAndLeave()}>Save</button>
+				</div>
+			</div>
+		</div>
+	{/if}
 	<CaptionDialog />
 	<SilenceRemovalDialog />
 	<VoiceoverDialog />
@@ -430,6 +563,57 @@
 	.loading-content p {
 		color: var(--text-muted);
 		font-size: 13px;
+	}
+
+	.prompt-backdrop {
+		position: fixed;
+		inset: 0;
+		display: grid;
+		place-items: center;
+		background: rgba(0, 0, 0, 0.6);
+		z-index: 10000;
+	}
+
+	.prompt {
+		width: 340px;
+		padding: 20px;
+		border: 1px solid var(--border-primary);
+		border-radius: 10px;
+		background: var(--bg-secondary, #1a1a1a);
+	}
+
+	.prompt h3 {
+		margin: 0 0 6px;
+		font-size: 14px;
+		color: var(--text-primary);
+	}
+
+	.prompt p {
+		margin: 0 0 16px;
+		font-size: 12px;
+		color: var(--text-secondary);
+	}
+
+	.prompt-actions {
+		display: flex;
+		justify-content: flex-end;
+		gap: 8px;
+	}
+
+	.prompt-btn {
+		padding: 6px 12px;
+		border-radius: 6px;
+		border: 1px solid var(--border-primary);
+		background: transparent;
+		color: var(--text-primary);
+		font-size: 12px;
+		cursor: pointer;
+	}
+
+	.prompt-btn.primary {
+		border-color: transparent;
+		background: var(--accent-primary, #ff5f45);
+		color: #fff;
 	}
 
 	.notification {

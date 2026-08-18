@@ -1,10 +1,13 @@
 # Loomo
 
-A screen recorder and multi-track video editor. Runs in the browser and as a
-native desktop app on Linux, macOS and Windows.
+A multi-track video editor. Runs as a native desktop app on Linux, macOS and
+Windows, and in the browser with reduced capability.
+
+Projects live in your own app-data folder. There is no account, nothing is
+uploaded, and the editor works with no network at all.
 
 ```
-apps/web/         SvelteKit 5 frontend — recorder, editor, dashboard, share
+apps/web/         SvelteKit 5 frontend — project library, editor, share
 apps/desktop/     Tauri 2 shell — native FFmpeg, offline projects, installers
 apps/backend/     Go API + workers — transcode, thumbnails, transcription
 apps/extension/   Chrome extension (Manifest V3)
@@ -67,17 +70,25 @@ only on Windows. Push a `v*` tag and
 
 ## Features
 
-### Recording
-Screen + camera, screen only, camera only, audio only. 1080p/720p/480p,
-H.264 preferred, camera bubble composited on a canvas. On the desktop,
-capture goes through FFmpeg (x11grab / avfoundation / gdigrab) and falls
-back to the browser recorder when unavailable — a Wayland session, for
-instance, which the app detects and explains.
+### Projects
+The app opens on a library of projects, each stored in its own folder under
+the OS app-data directory. Saving copies every clip into the project, so it
+still opens after you have moved, renamed or deleted whatever you originally
+imported — the copy happens in Rust, straight from the scratch directory the
+import already wrote, so nothing large passes through JavaScript in either
+direction.
+
+Leaving the editor with unsaved changes asks first. There is no autosave.
 
 ### Editing
 Multi-track timeline, trim, split, transitions, 12 filter presets plus 8
 manual adjustments, crop, rotate/flip, chroma key, PiP positioning, groups,
-markers, silence removal, AI voiceover, auto-captions.
+silence removal, AI voiceover, auto-captions.
+
+**Every track reaches the export.** Images and audio placed on their own
+tracks are composited over the base render — an image held over the opening
+seconds appears exactly where it was placed, and a music bed is mixed in
+rather than dropped.
 
 **Clip speed** — presets from 0.25x to 4x plus a slider. Changing speed
 retimes the clip and ripples the rest of the track, and the panel shows the
@@ -105,6 +116,15 @@ MP4, WebM, MKV, AVI, MOV, GIF, M4A up to 4K. Native FFmpeg on the desktop,
 ffmpeg.wasm on the web. Progress shows a stage, a projected time remaining
 and elapsed time, and the finished file goes wherever you choose through a
 real Save dialog.
+
+Bitrate follows the resolution (4K 35 Mbps down to 480p 2.5 Mbps), scaling
+uses lanczos, and the dialog says so when the chosen resolution is above the
+source — upscaling 720p footage to 4K makes the file larger, not sharper.
+
+**Match clip loudness** is on by default. Each clip is measured with EBU R128
+and corrected with a fixed gain, capped by its true peak so reaching the
+target never causes clipping. Clips cut together routinely differ by 10 dB,
+and reproducing that faithfully is what makes half a video sound broken.
 
 ---
 
@@ -157,7 +177,7 @@ differs from what you approved.
 ## Testing
 
 ```bash
-cd apps/web && bun run test     # ~400 tests
+cd apps/web && bun run test     # ~785 tests
 cd apps/web && bun run check    # typecheck, expects 0 errors
 cd apps/desktop/src-tauri && cargo test
 ```
@@ -188,6 +208,20 @@ the webview and swallows the file drop before the page's HTML5 `drop` fires.
 
 **Native `<select>` ignores CSS `color` on GTK.** Without `appearance: none`
 every dropdown renders unreadable.
+
+**A wasm constraint applied to the native engine is the recurring bug.** The
+export refused a 474 MB file (ffmpeg.wasm's heap limit), encoded 4K with
+`-preset ultrafast -threads 1 -b:v 5000k` (chosen to keep that heap small),
+and rebuilt every source in webview memory. None of it applies to a real
+binary. `FFmpegEngine` now declares `maxInputBytes` and `persistentStore`,
+and the pipeline asks rather than assumes.
+
+**`Clip.opacity` runs 0–1; `ClipFilters.opacity` runs 0–100.** Same codebase.
+Reading the first as a percentage drew every composited overlay at 1% alpha,
+which is indistinguishable from compositing not happening.
+
+**`amix` defaults to `normalize=1`,** which divides every input by the input
+count — adding one music track halves the original audio.
 
 **Sidecars are named `loomo-ffmpeg`.** Tauri installs them beside the binary,
 which in a `.deb` is `/usr/bin` — a sidecar called `ffmpeg` collides with the

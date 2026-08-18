@@ -5,6 +5,4 @@ export * from './export.js';
 export * from './audio.js';
 export * from './commands.js';
 export * from './project.js';
-export * from './recorder.js';
 export * from './auth.js';
-export * from './dashboard.js';

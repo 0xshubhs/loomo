@@ -14,9 +14,11 @@
 		onimport?: () => void;
 		onnewproject?: () => void;
 		onshortcuts?: () => void;
+		onsave?: () => void;
+		onleave?: () => void;
 	}
 
-	let { onimport, onnewproject, onshortcuts }: Props = $props();
+	let { onimport, onnewproject, onshortcuts, onsave, onleave }: Props = $props();
 	let showRatioMenu = $state(false);
 
 	function handleExport() {
@@ -60,7 +62,12 @@
 
 <header class="topbar">
 	<div class="topbar-left">
-		<span class="logo">MEOW</span>
+		<button class="back" onclick={onleave} title="Back to projects">
+			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+				<polyline points="15 18 9 12 15 6" />
+			</svg>
+			Projects
+		</button>
 		<div class="separator"></div>
 		<Button variant="ghost" size="sm" onclick={onnewproject}>New</Button>
 		<Button variant="ghost" size="sm" onclick={onimport}>
@@ -70,7 +77,20 @@
 	</div>
 
 	<div class="topbar-center">
-		<span class="project-name">{project.name}</span>
+		<input
+			class="project-name-input"
+			bind:value={project.name}
+			oninput={() => project.markDirty()}
+			aria-label="Project name"
+		/>
+		<!-- A dot rather than a word: it has to be glanceable, and "unsaved
+		     changes" is not something to read on every keystroke. -->
+		{#if project.dirty}
+			<span class="dirty-dot" title="Unsaved changes"></span>
+		{/if}
+		<Button variant="ghost" size="sm" onclick={onsave} disabled={project.saving}>
+			{project.saving ? 'Saving…' : 'Save'}
+		</Button>
 		<div class="separator"></div>
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div class="ratio-picker" onkeydown={handleRatioKeydown}>
@@ -156,6 +176,54 @@
 		font-size: 14px;
 		letter-spacing: 2px;
 		color: var(--text-primary);
+	}
+
+	.back {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		padding: 4px 8px;
+		border: none;
+		border-radius: 6px;
+		background: transparent;
+		color: var(--text-secondary);
+		font-size: 12px;
+		cursor: pointer;
+	}
+
+	.back:hover {
+		background: rgba(255, 255, 255, 0.06);
+		color: var(--text-primary);
+	}
+
+	.project-name-input {
+		width: 220px;
+		padding: 4px 8px;
+		border: 1px solid transparent;
+		border-radius: 6px;
+		background: transparent;
+		color: var(--text-primary);
+		font-size: 12px;
+		font-weight: 500;
+		text-align: center;
+	}
+
+	.project-name-input:hover {
+		border-color: var(--border-primary);
+	}
+
+	.project-name-input:focus {
+		outline: none;
+		border-color: var(--accent-primary, #ff5f45);
+		background: rgba(0, 0, 0, 0.2);
+	}
+
+	.dirty-dot {
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		background: var(--accent-primary, #ff5f45);
+		flex-shrink: 0;
 	}
 
 	.project-name {

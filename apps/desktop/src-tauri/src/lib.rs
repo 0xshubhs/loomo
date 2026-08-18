@@ -1,7 +1,5 @@
-mod capture;
 mod ffmpeg;
 mod permissions;
-mod portal;
 mod preview;
 mod projects;
 mod scratch;
@@ -35,7 +33,6 @@ pub fn run() {
             app.manage(scratch::Scratch::initialize(handle)?);
             app.manage(projects::Library::initialize(handle)?);
             app.manage(ffmpeg::FfmpegState::default());
-            app.manage(capture::CaptureState::default());
             app.manage(preview::PreviewState::default());
 
             // WebKitGTK denies camera and microphone access unless the
@@ -55,7 +52,6 @@ pub fn run() {
                 // recorder instead of orphaning them as background processes.
                 let app = window.app_handle();
                 ffmpeg::kill_all(&app.state::<ffmpeg::FfmpegState>());
-                capture::abort(&app.state::<capture::CaptureState>());
                 preview::kill_all(&app.state::<preview::PreviewState>());
             }
         })
@@ -72,11 +68,6 @@ pub fn run() {
             ffmpeg::ffmpeg_exec,
             ffmpeg::ffmpeg_cancel,
             ffmpeg::ffprobe_media,
-            capture::capture_capabilities,
-            capture::capture_start,
-            capture::capture_stop,
-            capture::capture_status,
-            capture::capture_sources,
             preview::preview_frame,
             preview::preview_start,
             preview::preview_stop,
@@ -86,6 +77,8 @@ pub fn run() {
             projects::projects_delete,
             projects::projects_import_media,
             projects::projects_write_media,
+            projects::projects_stage_media,
+            projects::projects_scratch_path,
             projects::projects_dir,
         ])
         .build(tauri::generate_context!())
@@ -93,7 +86,6 @@ pub fn run() {
         .run(|app, event| {
             if let RunEvent::ExitRequested { .. } = event {
                 ffmpeg::kill_all(&app.state::<ffmpeg::FfmpegState>());
-                capture::abort(&app.state::<capture::CaptureState>());
                 preview::kill_all(&app.state::<preview::PreviewState>());
             }
         });

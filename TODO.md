@@ -4,102 +4,113 @@ State as of the last push. Written down so none of it has to be rediscovered.
 
 ---
 
-## 1. AI tools — infrastructure is done, models are not wired
+## 1. Scope: editor only
+
+The screen recorder was removed. It never worked reliably in the WebKitGTK
+webview, and the last attempt — porting OBS's xdg-desktop-portal + PipeWire
+sequence — was still unproven when the decision was made to drop it.
+
+Everything for it is in git history if it is ever wanted back:
+
+- `apps/desktop/src-tauri/src/capture.rs` — x11grab / avfoundation / gdigrab
+- `apps/desktop/src-tauri/src/portal.rs` — the OBS portal sequence, in Rust
+  (`CreateSession`, `SelectSources`, `Start`, `OpenPipeWireRemote` via ashpd),
+  feeding GStreamer `pipewiresrc`. It compiled and the pipeline shape was
+  verified to produce a playable MP4; the portal picker itself was never
+  exercised in a real session.
+- `apps/web/src/lib/recorder/`, `components/recorder/`, `state/recorder.svelte.ts`
+
+Removing it also dropped the `gstreamer1.0-pipewire`, `-ugly`, `-tools` and
+`xdg-desktop-portal` deb dependencies.
+
+---
+
+## 2. Projects — done, with edges
+
+Saving copies each clip into the project folder and reopening stages it back,
+both directions as a Rust file copy. The document format is versioned and
+refuses anything written by a newer build.
+
+Known gaps:
+
+- **No autosave.** Leaving asks; a crash loses the edit.
+- **Reopened assets carry an empty `File`.** Nothing on the desktop path reads
+  it — ffmpeg works from the staged scratch copy — but `probeVideoResolution`
+  falls back to "unknown", which pushes the export onto the re-encode strategy
+  instead of stream copy. Correct output, slower than it needs to be.
+- **Waveforms are not saved**, so an audio clip reopens without its waveform.
+- **A missing media file is skipped with a console warning.** It should be
+  visible in the UI.
+
+---
+
+## 3. AI tools — infrastructure done, models not wired
 
 `apps/web/src/lib/ai/` is complete and tested (199 tests): ONNX runtime
 adapter, model registry, download cache with integrity checking, tensor
 preprocessing, background removal, upscale, colorize. `AiToolsPanel.svelte`
-exists.
+exists and is **not mounted**.
 
-**It cannot run inference yet.** Three things block it:
+Three things block inference:
 
-### 1a. `onnxruntime-web` is not installed
-One dependency:
-```bash
-bun add --cwd apps/web onnxruntime-web
-```
-Then in `apps/web/vite.config.ts` add `optimizeDeps.exclude: ['onnxruntime-web']`,
-copy its `.wasm`/`.mjs` artefacts into `apps/web/static/`, and keep the
-COOP/COEP headers if multi-threaded wasm is wanted. No code in `lib/ai`
-changes — `runtime.ts` picks it up through a dynamic import.
+1. `onnxruntime-web` is not installed. `bun add --cwd apps/web onnxruntime-web`,
+   then `optimizeDeps.exclude` it in `vite.config.ts` and copy its wasm assets
+   into `static/`.
+2. Half the model URLs are dead — **verified, not guessed**:
+   ```
+   200  github.com/danielgatis/rembg/.../u2netp.onnx        cutout, works
+   200  github.com/danielgatis/rembg/.../u2net.onnx         cutout, works
+   200  huggingface.co/briaai/RMBG-1.4/.../model.onnx       cutout, works
+   401  huggingface.co/Xenova/real-esrgan-x2plus/...        repo does not exist
+   401  huggingface.co/Xenova/real-esrgan-x4plus/...        repo does not exist
+   401  huggingface.co/Xenova/colorizer-siggraph17/...      repo does not exist
+   ```
+   Background removal can ship first. Candidates for the others, none
+   inspected: `imgdesignart/realesrgan-x4-onnx`, `Meeperomi/RealESRGAN_x4-onnx`,
+   `bukuroo/RealESRGAN-ONNX`, `Faridzar/manga-colorization-v2-onnx`.
+3. Every `sha256` in the registry is `null`, so `ModelCache` reports
+   `verified: false`. Download each once, hash it, pin the digest.
 
-### 1b. Half the model URLs are dead — **verified, not guessed**
-```
-200  github.com/danielgatis/rembg/.../u2netp.onnx        cutout, works
-200  github.com/danielgatis/rembg/.../u2net.onnx         cutout, works
-200  huggingface.co/briaai/RMBG-1.4/.../model.onnx       cutout, works
-401  huggingface.co/Xenova/real-esrgan-x2plus/...        repo does not exist
-401  huggingface.co/Xenova/real-esrgan-x4plus/...        repo does not exist
-401  huggingface.co/Xenova/colorizer-siggraph17/...      repo does not exist
-```
-So **background removal can ship first**; upscale and colorize need real
-repos. Candidates found on HuggingFace, none inspected yet:
-`imgdesignart/realesrgan-x4-onnx`, `Meeperomi/RealESRGAN_x4-onnx`,
-`bukuroo/RealESRGAN-ONNX`, `Faridzar/manga-colorization-v2-onnx`.
-Check each has an `.onnx` file, then fix the URL and the input/output tensor
-names in `model-registry.ts`.
-
-### 1c. Every `sha256` in the registry is `null`
-`ModelCache` therefore reports `verified: false` and the UI says so. Download
-each model once, hash it, pin the digest. The verify-and-reject path is
-already written and tested — it just has nothing to compare against.
-
-### 1d. `AiToolsPanel` is not mounted
-It takes `getFrame` / `onResult` props deliberately, so it does not touch the
-timeline. Add it to `PropertiesPanel.svelte` and supply a function that
-returns the current preview frame as `ImageData`.
-
-**Also unverified:** tensor input/output names (the u2netp output name
-`'1959'` especially), Real-ESRGAN's fixed 256 input size (real exports are
-usually dynamic-axis), and whether the colorizer emits 256×256 or 64×64 ab
-channels. Fallbacks exist for renamed inputs/outputs, but these are guesses
-until a model actually loads.
+Tensor input/output names are guesses until a model actually loads.
 
 ---
 
-## 2. Still missing from VN parity
+## 4. Still missing from VN
 
 - **Project templates** — VN ships ~150. Nothing exists.
-- **BeatsClips** — auto-cut to music beats. Needs onset detection; no
-  foundation yet.
+- **BeatsClips** — auto-cut to music beats. Needs onset detection.
 - **Masks** — shape/gradient masks per clip. Not started.
-- **Motion tracking** — VN does not have it either, but the mosaic feature
-  would be far more useful with it.
 
 ---
 
-## 3. Known rough edges
+## 5. Known rough edges
 
-- **Markers** — `M` is bound in the keyboard map and wired to nothing.
-- **Mosaic regions** are slider-driven only. They should be draggable on the
-  preview; the annotation layer now proves that interaction works and could
-  be reused.
-- **Speed curve audio** is stretched by the *average* rate, so long ramps
+- **Markers** — `M` is in the keyboard map and wired to nothing.
+- **Mosaic regions** are slider-driven; they should be draggable on the
+  preview. The annotation layer proves that interaction works.
+- **Speed-curve audio** is stretched by the *average* rate, so long ramps
   drift. Exact variable-rate audio needs per-segment resampling.
-- **Native capture on Wayland** falls back to the browser recorder. Real fix
-  is a PipeWire/portal path.
-- **Preview audio** decodes the whole clip to an AudioBuffer (~40MB per
-  minute). Fine for clips, wasteful for long sources; should stream.
-- **Dashboard** calls `/api/videos` on the desktop, where no backend exists,
-  and logs a `SyntaxError` on every launch. Harmless but it pollutes the log
-  and should be skipped when `isDesktop()`.
+- **The preview has not been checked against multi-track compositing.** The
+  exported file is verified by tests that sample real pixels; whether the
+  preview canvas draws overlay tracks the same way is unknown.
+- **Preview audio** decodes a whole clip to an AudioBuffer (~40 MB/minute).
 
 ---
 
-## 4. Not verified by me
+## 6. Not verified
 
-- **macOS and Windows builds.** Apple and MSVC toolchains cannot cross-build;
-  the CI matrix in `.github/workflows/desktop-release.yml` is written but has
-  never run.
-- **Code signing.** Unsigned builds warn on launch — Gatekeeper on macOS,
-  SmartScreen on Windows. The workflow picks up `APPLE_*` secrets if set.
-- **The web build's editor** has had far less exercise than the desktop one.
+- **macOS and Windows builds.** The CI matrix in
+  `.github/workflows/desktop-release.yml` has never run. Apple and MSVC
+  toolchains cannot cross-build from Linux.
+- **Code signing.** Unsigned builds warn on launch.
+- **The web build's editor** has had far less exercise than the desktop one,
+  and projects are desktop-only.
 
 ---
 
-## 5. Worth doing before anything else
+## 7. Worth doing first
 
-`.deb` installers are ~61MB because the bundled ffmpeg and ffprobe are ~80MB
+`.deb` installers are ~61 MB because the bundled ffmpeg and ffprobe are ~80 MB
 each before compression. Dropping ffprobe from `BINARIES` in
 `apps/desktop/scripts/fetch-ffmpeg.mjs` roughly halves that; the only cost is
 the accurate metadata probe, which `ffmpeg -i` can approximate.

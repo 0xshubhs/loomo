@@ -70,6 +70,22 @@ export const localProjects = {
 		});
 	},
 
+	/**
+	 * Copies project media back into the scratch directory.
+	 *
+	 * Both directions are a file copy inside Rust, which is why opening a
+	 * project with a gigabyte of footage is instant: the bytes never cross the
+	 * IPC boundary or enter the webview's heap.
+	 */
+	async stageMedia(id: string, filename: string, scratchName: string): Promise<string> {
+		return await invoke<string>('projects_stage_media', { id, filename, scratchName });
+	},
+
+	/** Absolute path of a scratch file, for handing to `importFile`. */
+	async scratchPath(name: string): Promise<string> {
+		return await invoke<string>('projects_scratch_path', { name });
+	},
+
 	/** Folder on disk, for a "reveal in file manager" action. */
 	async directory(id?: string): Promise<string> {
 		return await invoke<string>('projects_dir', { id: id ?? null });

@@ -32,12 +32,6 @@ tauri-plugin-single-instance = "2"
 # refer to the same GObject types.
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = { version = "=2.0.2", features = ["v2_40"] }
-# xdg-desktop-portal ScreenCast client, for Wayland screen capture. This is the
-# same D-Bus sequence OBS drives in plugins/linux-pipewire/screencast-portal.c:
-# CreateSession, SelectSources, Start, OpenPipeWireRemote.
-ashpd = { version = "0.11", default-features = false, features = ["tokio"] }
-# SIGINT to the GStreamer pipeline: it is what makes mp4mux write its index.
-libc = "0.2"
 
 [profile.release]
 codegen-units = 1

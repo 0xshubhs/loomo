@@ -1,113 +1,84 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { getDashboard } from '$lib/state/context.js';
-	import { listVideos, deleteVideo, updateVideo } from '$lib/api/videos.js';
+	import { goto } from '$app/navigation';
+	import { localProjects, type LocalProjectMeta } from '$lib/desktop/projects.js';
 	import { isDesktop } from '$lib/desktop/env.js';
-	import { localProjects } from '$lib/desktop/projects.js';
-	import DashboardLayout from '$lib/components/dashboard/DashboardLayout.svelte';
-	import type { VideoItem } from '$lib/types/dashboard.js';
-
-	const dashboard = getDashboard();
-
-	onMount(async () => {
-		await loadVideos();
-	});
+	import { generateId } from '$lib/utils/id.js';
+	import ProjectLibrary from '$lib/components/projects/ProjectLibrary.svelte';
 
 	/**
-	 * The desktop build has no backend to talk to, so the library it shows is
-	 * the offline project store. Calling the cloud API there fails on every
-	 * launch and produces nothing useful.
+	 * The app's home: the project library.
+	 *
+	 * Projects live in the user's own app-data folder. There is no account and
+	 * nothing is uploaded anywhere, so this is the whole story — what is on
+	 * disk is what exists.
 	 */
-	async function loadLocalProjects() {
-		const projects = await localProjects.list();
-		const videos: VideoItem[] = projects.map((p) => ({
-			id: p.id,
-			title: p.name || 'Untitled',
-			description: null,
-			status: 'ready',
-			durationMs: p.duration > 0 ? Math.round(p.duration * 1000) : null,
-			thumbnailUrl: p.thumbnail,
-			gifUrl: null,
-			hlsUrl: null,
-			shareMode: 'local',
-			shareUrl: `/edit?project=${p.id}`,
-			createdAt: new Date(p.createdAt).toISOString(),
-			updatedAt: new Date(p.updatedAt).toISOString(),
-		}));
-		dashboard.setVideos(videos, {
-			page: 1,
-			perPage: videos.length || 1,
-			total: videos.length,
-			hasMore: false,
-		});
-	}
 
-	/**
-	 * There is no rename command — a project is stored as its document, so a
-	 * rename is a save that reuses the document and metadata already on disk.
-	 */
-	async function renameLocalProject(id: string, title: string) {
-		const existing = dashboard.videos.find((v) => v.id === id);
-		const document = await localProjects.load(id);
-		await localProjects.save(id, title, document, {
-			duration: existing?.durationMs ? existing.durationMs / 1000 : 0,
-			thumbnail: existing?.thumbnailUrl ?? null,
-		});
-	}
+	let projects = $state<LocalProjectMeta[]>([]);
+	let loading = $state(true);
+	let error = $state<string | null>(null);
 
-	async function loadVideos() {
-		dashboard.loading = true;
+	onMount(load);
+
+	async function load() {
+		loading = true;
+		error = null;
 		try {
-			if (isDesktop()) {
-				await loadLocalProjects();
+			if (!isDesktop()) {
+				error = 'Projects are stored on disk. Open the desktop app to use them.';
+				projects = [];
 				return;
 			}
-			const res = await listVideos(dashboard.pagination.page, dashboard.pagination.perPage);
-			const videos: VideoItem[] = (res.videos ?? []).map((v: any) => ({
-				id: v.id,
-				title: v.title ?? 'Untitled',
-				description: v.description ?? null,
-				status: v.status ?? 'processing',
-				durationMs: v.duration ?? null,
-				thumbnailUrl: v.thumbnail_url ?? null,
-				gifUrl: v.gif_url ?? null,
-				hlsUrl: v.hls_url ?? null,
-				shareMode: v.share_mode ?? 'unlisted',
-				shareUrl: `/share/${v.id}`,
-				createdAt: v.created_at,
-				updatedAt: v.updated_at ?? v.created_at,
-			}));
-			dashboard.setVideos(videos, {
-				page: res.pagination?.page ?? 1,
-				perPage: res.pagination?.per_page ?? 20,
-				total: res.pagination?.total ?? videos.length,
-				hasMore: res.pagination?.has_more ?? false,
-			});
+			projects = sortByEdited(await localProjects.list());
 		} catch (err) {
-			console.error('Failed to load videos:', err);
+			console.error('Could not list projects:', err);
+			error = `Could not read your projects: ${err}`;
 		} finally {
-			dashboard.loading = false;
+			loading = false;
+		}
+	}
+
+	/** Most recently edited first — the one you want is almost always the last one. */
+	function sortByEdited(list: LocalProjectMeta[]): LocalProjectMeta[] {
+		return [...list].sort((a, b) => b.updatedAt - a.updatedAt);
+	}
+
+	function handleNew() {
+		// The id is minted here so the editor has one route and one lifecycle;
+		// nothing is written to disk until the project is saved.
+		goto(`/edit/${generateId()}`);
+	}
+
+	async function handleRename(id: string, name: string) {
+		try {
+			const document = await localProjects.load(id);
+			const existing = projects.find((p) => p.id === id);
+			await localProjects.save(id, name, document, {
+				duration: existing?.duration ?? 0,
+				thumbnail: existing?.thumbnail ?? null,
+			});
+			await load();
+		} catch (err) {
+			error = `Could not rename the project: ${err}`;
+		}
+	}
+
+	async function handleDelete(id: string) {
+		try {
+			await localProjects.remove(id);
+			projects = projects.filter((p) => p.id !== id);
+		} catch (err) {
+			error = `Could not delete the project: ${err}`;
 		}
 	}
 </script>
 
-<DashboardLayout
-	ondelete={async (id) => {
-		try {
-			if (isDesktop()) await localProjects.remove(id);
-			else await deleteVideo(id);
-			dashboard.removeVideo(id);
-		} catch (err) {
-			console.error('Failed to delete:', err);
-		}
-	}}
-	onrename={async (id, title) => {
-		try {
-			if (isDesktop()) await renameLocalProject(id, title);
-			else await updateVideo(id, { title });
-			dashboard.updateVideo(id, { title });
-		} catch (err) {
-			console.error('Failed to rename:', err);
-		}
-	}}
+<ProjectLibrary
+	{projects}
+	{loading}
+	{error}
+	onnew={handleNew}
+	onopen={(id) => goto(`/edit/${id}`)}
+	onrename={handleRename}
+	ondelete={handleDelete}
 />

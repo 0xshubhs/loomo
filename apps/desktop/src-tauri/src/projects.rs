@@ -253,6 +253,42 @@ pub fn projects_write_media(
     Ok(destination.to_string_lossy().into_owned())
 }
 
+/**
+ * Copies a project's media into the scratch directory so ffmpeg can reach it.
+ *
+ * The reverse of `projects_import_media`, and the reason reopening a project is
+ * cheap: both directions are a file copy inside Rust, so a gigabyte of footage
+ * never crosses the IPC boundary or enters the webview's heap.
+ */
+#[tauri::command]
+pub fn projects_stage_media(
+    library: State<'_, Library>,
+    scratch: State<'_, crate::scratch::Scratch>,
+    id: String,
+    filename: String,
+    scratch_name: String,
+) -> Result<String, String> {
+    let name = safe_filename(&filename)?;
+    let source = library.project_dir(&id)?.join("media").join(name);
+    if !source.is_file() {
+        return Err(format!("project media {} is missing", source.display()));
+    }
+
+    let destination = scratch.resolve(&scratch_name)?;
+    fs::copy(&source, &destination)
+        .map_err(|e| format!("cannot stage {}: {e}", source.display()))?;
+    Ok(scratch_name)
+}
+
+/// Absolute path of a file in the scratch directory, for handing to an import.
+#[tauri::command]
+pub fn projects_scratch_path(
+    scratch: State<'_, crate::scratch::Scratch>,
+    name: String,
+) -> Result<String, String> {
+    Ok(scratch.resolve(&name)?.to_string_lossy().into_owned())
+}
+
 #[tauri::command]
 pub fn projects_dir(library: State<'_, Library>, id: Option<String>) -> Result<String, String> {
     let path = match id {

@@ -7,8 +7,6 @@ import { UIStore } from './ui.svelte.js';
 import { SelectionStore } from './selection.svelte.js';
 import { CommandManager } from '$lib/commands/command-manager.svelte.js';
 import { AuthStore } from './auth.svelte.js';
-import { RecorderStore } from './recorder.svelte.js';
-import { DashboardStore } from './dashboard.svelte.js';
 import { CaptionStore } from './captions.svelte.js';
 
 const KEYS = {
@@ -20,8 +18,6 @@ const KEYS = {
 	selection: Symbol('selection'),
 	commands: Symbol('commands'),
 	auth: Symbol('auth'),
-	recorder: Symbol('recorder'),
-	dashboard: Symbol('dashboard'),
 	captions: Symbol('captions'),
 } as const;
 
@@ -85,28 +81,16 @@ export function getCaptions(): CaptionStore {
 
 export interface AppContext {
 	auth: AuthStore;
-	recorder: RecorderStore;
-	dashboard: DashboardStore;
 }
 
 export function createAppContext(): AppContext {
 	const auth = new AuthStore();
-	const recorder = new RecorderStore();
-	const dashboard = new DashboardStore();
 
 	setContext(KEYS.auth, auth);
-	setContext(KEYS.recorder, recorder);
-	setContext(KEYS.dashboard, dashboard);
 
-	return { auth, recorder, dashboard };
+	return { auth };
 }
 
 export function getAuth(): AuthStore {
 	return getContext(KEYS.auth);
-}
-export function getRecorder(): RecorderStore {
-	return getContext(KEYS.recorder);
-}
-export function getDashboard(): DashboardStore {
-	return getContext(KEYS.dashboard);
 }
