@@ -1,6 +1,7 @@
 import type { Clip, Track } from '$lib/types/timeline.js';
 import { hasNonDefaultPosition } from '$lib/utils/pip-presets.js';
 import { DEFAULT_CLIP_POSITION } from '$lib/types/timeline.js';
+import { gainFilter } from './loudness.js';
 
 /**
  * Everything on the timeline that is not the base video track.
@@ -76,6 +77,12 @@ export interface CompositeOptions {
 	fps: number;
 	/** Whether the base render carries an audio stream to mix against. */
 	baseHasAudio: boolean;
+	/**
+	 * Loudness correction per clip id, in dB. A music bed dropped in at its
+	 * own level is exactly the mismatch the matching exists to remove, so it
+	 * gets the same treatment as anything on the base track.
+	 */
+	gains?: Map<string, number>;
 }
 
 /**
@@ -157,6 +164,13 @@ export function buildCompositeFilter(
 		const volume = clip.muted ? 0 : clip.volume;
 
 		const chain = [`volume=${volume}`];
+
+		const gain = options.gains?.get(clip.id);
+		if (gain !== undefined) {
+			const filter = gainFilter(gain);
+			if (filter) chain.push(filter);
+		}
+
 		// adelay pads the front so the clip lands where it was placed. Both
 		// channels need a value or only the left one is delayed.
 		if (delayMs > 0) chain.push(`adelay=${delayMs}|${delayMs}`);

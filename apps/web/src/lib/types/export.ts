@@ -14,6 +14,13 @@ export interface ExportConfig {
 	videoBitrate: number;
 	audioBitrate: number;
 	quality: number;
+	/**
+	 * Bring every clip to a common loudness before mixing.
+	 *
+	 * Clips cut together routinely differ by 10dB or more, and reproducing that
+	 * faithfully makes half a video sound like the volume was turned down.
+	 */
+	normalizeLoudness?: boolean;
 }
 
 export interface ExportProgress {

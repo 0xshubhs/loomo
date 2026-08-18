@@ -8,6 +8,13 @@ import { DEFAULT_CLIP_FILTERS, DEFAULT_TRANSFORM, DEFAULT_CROP, DEFAULT_CHROMA_K
 import { hasNonDefaultFilters } from '$lib/utils/filter-presets.js';
 import { hasNonDefaultPosition } from '$lib/utils/pip-presets.js';
 import {
+	DEFAULT_LOUDNESS_TARGET,
+	gainFilter,
+	gainToTarget,
+	loudnessAnalysisArgs,
+	parseLoudnessOutput,
+} from './loudness.js';
+import {
 	planComposite,
 	buildCompositeFilter,
 	inputArgsFor,
@@ -148,12 +155,25 @@ export async function exportTimeline(
 		}
 	}
 
+	// Measured before the strategy is chosen: a clip that needs a correction
+	// cannot be stream-copied, so this feeds the decision below.
+	const audioClipsForLoudness = tracks
+		.filter((t) => (t.type === 'video' ? true : !t.muted))
+		.flatMap((t) => t.clips);
+	const gains = config.normalizeLoudness
+		? await measureLoudness(ffmpeg, audioClipsForLoudness, getAssetFile, progress)
+		: new Map<string, number>();
+	const hasLoudnessGain = sortedClips.some((clip) => {
+		const gain = gains.get(clip.id);
+		return gain !== undefined && !!gainFilter(gain);
+	});
+
 	let result: ExportResult;
 
 	if (config.format === 'm4a') {
 		// Audio only. Without this the pipeline encoded video into the .m4a and
 		// called it an audio export.
-		result = await exportAudioOnly(ffmpeg, sortedClips, config, outputFile, getAssetFile, progress);
+		result = await exportAudioOnly(ffmpeg, sortedClips, config, outputFile, getAssetFile, progress, gains);
 	} else if (config.format === 'gif') {
 		// GIF needs its own muxer and a colour palette; the normal path handed
 		// it libx264, which the gif muxer rejects outright.
@@ -164,18 +184,18 @@ export async function exportTimeline(
 	} else if (hasEffects) {
 		// Strategy C: filter_complex — text overlays or transitions need all clips
 		result = await exportFilterComplex(
-			ffmpeg, sortedClips, textOverlays, shapeOverlays, config, targetWidth, targetHeight, outputFile, getAssetFile, progress, captionTrack, annotations
+			ffmpeg, sortedClips, textOverlays, shapeOverlays, config, targetWidth, targetHeight, outputFile, getAssetFile, progress, captionTrack, annotations, gains
 		);
-	} else if (!needsScale && sortedClips.length === 1) {
+	} else if (!needsScale && !hasLoudnessGain && sortedClips.length === 1) {
 		// Strategy A: Single clip, source resolution — stream copy
-		result = await exportSingleClipStreamCopy(ffmpeg, sortedClips[0], config, outputFile, getAssetFile, progress);
-	} else if (!needsScale) {
+		result = await exportSingleClipStreamCopy(ffmpeg, sortedClips[0], config, outputFile, getAssetFile, progress, gains);
+	} else if (!needsScale && !hasLoudnessGain) {
 		// Strategy A: Multi-clip, source resolution — stream copy concat
-		result = await exportConcatStreamCopy(ffmpeg, sortedClips, config, outputFile, getAssetFile, progress);
+		result = await exportConcatStreamCopy(ffmpeg, sortedClips, config, outputFile, getAssetFile, progress, gains);
 	} else {
 		// Strategy B: Resolution change (4K, downscale, etc.) — re-encode per-clip + concat
 		result = await exportReencodeConcat(
-			ffmpeg, sortedClips, config, targetWidth, targetHeight, outputFile, getAssetFile, progress
+			ffmpeg, sortedClips, config, targetWidth, targetHeight, outputFile, getAssetFile, progress, gains
 		);
 	}
 
@@ -185,7 +205,7 @@ export async function exportTimeline(
 	if (config.format !== 'gif' && config.format !== 'm4a') {
 		result = await compositeExtraTracks(
 			ffmpeg, result, tracks, videoTrack.id, config,
-			targetWidth, targetHeight, getAssetFile, progress
+			targetWidth, targetHeight, getAssetFile, progress, gains
 		);
 	}
 
@@ -242,6 +262,78 @@ function probeVideoResolution(file: File): Promise<{ width: number; height: numb
 	});
 }
 
+// ── Loudness matching ───────────────────────────────────────────────
+
+/** Correction in dB for each clip, by clip id. Absent means leave it alone. */
+export type LoudnessGains = Map<string, number>;
+
+/**
+ * Measures every clip that contributes sound and works out its correction.
+ *
+ * One analysis pass per clip, decoding audio only. Clips with no audio, or
+ * whose asset cannot be found, are simply left out of the map; a failed
+ * measurement must never fail an export, since the worst case without it is
+ * the levels people had before.
+ */
+async function measureLoudness(
+	ffmpeg: FFmpegEngine,
+	clips: Clip[],
+	getAssetFile: AssetResolver,
+	progress: (stage: ExportProgress['stage'], p: number) => void
+): Promise<LoudnessGains> {
+	const gains: LoudnessGains = new Map();
+	const measured = new Map<string, number>();
+
+	for (let i = 0; i < clips.length; i++) {
+		const clip = clips[i];
+		if (clip.muted || clip.type === 'image') continue;
+
+		const asset = getAssetFile(clip.assetId);
+		if (!asset) continue;
+
+		// Two clips cut from one source over the same range measure the same;
+		// the key covers the trim because a quiet passage is not the whole file.
+		const key = `${clip.assetId}:${clip.sourceStart.toFixed(2)}:${clip.duration.toFixed(2)}`;
+		const cached = measured.get(key);
+		if (cached !== undefined) {
+			gains.set(clip.id, cached);
+			continue;
+		}
+
+		progress('preparing', (i / clips.length) * 0.05);
+
+		const temps: string[] = [];
+		try {
+			const input = await prepareInput(ffmpeg, asset, `loud_${clip.id}.${getExt(asset.name)}`);
+			if (input.disposable) temps.push(input.path);
+
+			let output = '';
+			const exitCode = await ffmpeg.exec(
+				loudnessAnalysisArgs(input.path, {
+					sourceStart: clip.sourceStart,
+					duration: clip.duration,
+				}),
+				{ onLog: (line) => { output += `${line}\n`; } }
+			);
+
+			if (exitCode === 0) {
+				const measurement = parseLoudnessOutput(output);
+				if (measurement) {
+					const gain = gainToTarget(measurement, DEFAULT_LOUDNESS_TARGET);
+					measured.set(key, gain);
+					gains.set(clip.id, gain);
+				}
+			}
+		} catch (error) {
+			console.warn(`[export] loudness measurement failed for "${clip.name}":`, error);
+		} finally {
+			await cleanup(ffmpeg, temps);
+		}
+	}
+
+	return gains;
+}
+
 // ── Compositing the tracks the base render did not cover ────────────
 
 /**
@@ -261,7 +353,8 @@ async function compositeExtraTracks(
 	width: number,
 	height: number,
 	getAssetFile: AssetResolver,
-	progress: (stage: ExportProgress['stage'], p: number) => void
+	progress: (stage: ExportProgress['stage'], p: number) => void,
+	gains?: LoudnessGains
 ): Promise<ExportResult> {
 	const { overlayClips, audioClips } = planComposite(tracks, baseTrackId);
 	if (overlayClips.length === 0 && audioClips.length === 0) return base;
@@ -289,6 +382,7 @@ async function compositeExtraTracks(
 		height,
 		fps: config.fps,
 		baseHasAudio,
+		gains,
 	});
 
 	const tuning = encoderTuning(ffmpeg);
@@ -390,7 +484,8 @@ async function exportAudioOnly(
 	config: ExportConfig,
 	outputFile: string,
 	getAssetFile: AssetResolver,
-	progress: (stage: ExportProgress['stage'], p: number) => void
+	progress: (stage: ExportProgress['stage'], p: number) => void,
+	gains?: LoudnessGains
 ): Promise<ExportResult> {
 	const temps: string[] = [];
 	const segments: string[] = [];
@@ -413,7 +508,7 @@ async function exportAudioOnly(
 		// -vn is the whole point: no video stream reaches the muxer.
 		args.push('-vn');
 
-		const audioFilters = buildFfmpegAudioFilters(clip);
+		const audioFilters = buildFfmpegAudioFilters(clip, gains);
 		if (audioFilters.length > 0) args.push('-af', audioFilters.join(','));
 
 		args.push('-c:a', config.audioCodec);
@@ -577,7 +672,8 @@ async function exportSingleClipStreamCopy(
 	config: ExportConfig,
 	outputFile: string,
 	getAssetFile: AssetResolver,
-	progress: (stage: ExportProgress['stage'], p: number) => void
+	progress: (stage: ExportProgress['stage'], p: number) => void,
+	gains?: LoudnessGains
 ): Promise<ExportResult> {
 	const asset = getAssetFile(clip.assetId);
 	if (!asset) throw new Error(`Asset not found for clip "${clip.name}"`);
@@ -621,7 +717,8 @@ async function exportConcatStreamCopy(
 	config: ExportConfig,
 	outputFile: string,
 	getAssetFile: AssetResolver,
-	progress: (stage: ExportProgress['stage'], p: number) => void
+	progress: (stage: ExportProgress['stage'], p: number) => void,
+	gains?: LoudnessGains
 ): Promise<ExportResult> {
 	const trimmedFiles: string[] = [];
 	const total = sortedClips.length;
@@ -706,7 +803,8 @@ async function exportReencodeConcat(
 	height: number,
 	outputFile: string,
 	getAssetFile: AssetResolver,
-	progress: (stage: ExportProgress['stage'], p: number) => void
+	progress: (stage: ExportProgress['stage'], p: number) => void,
+	gains?: LoudnessGains
 ): Promise<ExportResult> {
 	const encodedFiles: string[] = [];
 	const total = sortedClips.length;
@@ -787,7 +885,7 @@ async function exportReencodeConcat(
 		args.push('-vf', vf);
 
 		// Audio filters: volume, fades, noise suppression, speed, reverse
-		const audioFilters = buildFfmpegAudioFilters(clip);
+		const audioFilters = buildFfmpegAudioFilters(clip, gains);
 		if (audioFilters.length > 0) {
 			args.push('-af', audioFilters.join(','));
 		}
@@ -879,7 +977,8 @@ async function exportFilterComplex(
 	getAssetFile: AssetResolver,
 	progress: (stage: ExportProgress['stage'], p: number) => void,
 	captionTrack?: CaptionTrack,
-	annotations: Annotation[] = []
+	annotations: Annotation[] = [],
+	gains?: LoudnessGains
 ): Promise<ExportResult> {
 	const tuning = encoderTuning(ffmpeg);
 
@@ -1039,7 +1138,7 @@ async function exportFilterComplex(
 		}
 
 		// Build audio chain with all effects
-		const audioFilters = buildFfmpegAudioFilters(clip);
+		const audioFilters = buildFfmpegAudioFilters(clip, gains);
 		const denoise = buildDenoiseFilter(clip.denoiseStrength ?? 0);
 		if (denoise) audioFilters.push(denoise);
 		const keyframeVolume = buildKeyframeVolumeFilter(clip);
@@ -1394,12 +1493,20 @@ function buildFfmpegChromaKeyFilter(clip: Clip): string | null {
  * Build FFmpeg audio filter chain for a clip.
  * Handles: volume, fades, noise suppression, speed (atempo), reverse.
  */
-function buildFfmpegAudioFilters(clip: Clip): string[] {
+function buildFfmpegAudioFilters(clip: Clip, gains?: LoudnessGains): string[] {
 	const parts: string[] = [];
 
 	// Volume
 	const vol = clip.muted ? 0 : clip.volume;
 	parts.push(`volume=${vol}`);
+
+	// Loudness match, before anything that shapes the signal, so fades and
+	// suppression act on the corrected level.
+	const gain = gains?.get(clip.id);
+	if (gain !== undefined) {
+		const filter = gainFilter(gain);
+		if (filter) parts.push(filter);
+	}
 
 	// Noise suppression: highpass + lowpass
 	if (clip.noiseSuppression) {

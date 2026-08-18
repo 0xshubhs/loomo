@@ -43,6 +43,9 @@
 	let resolution = $state<Resolution>('1080p');
 	let fps = $state(30);
 	let audioBitrate = $state(192);
+	// On by default: clips cut together routinely differ by 10dB or more, and
+	// the faithful result is the one that sounds broken.
+	let normalizeLoudness = $state(true);
 	let quality = $state(23);
 	let exporting = $state(false);
 
@@ -80,6 +83,7 @@
 		videoBitrate,
 		audioBitrate,
 		quality,
+		normalizeLoudness,
 	});
 
 	function handleExport() {
@@ -170,6 +174,14 @@
 			{/if}
 
 			{#if !isGif}
+				<label class="toggle-row">
+					<input type="checkbox" bind:checked={normalizeLoudness} />
+					<span>
+						Match clip loudness
+						<small>Brings quiet and loud clips to the same level</small>
+					</span>
+				</label>
+
 				<div class="field-row">
 					<Slider label="Audio Bitrate (kbps)" bind:value={audioBitrate} min={64} max={320} step={32} />
 				</div>
@@ -234,6 +246,27 @@
 		color: var(--text-muted);
 		padding: 8px 0;
 		border-top: 1px solid var(--border-primary);
+	}
+
+	.toggle-row {
+		display: flex;
+		align-items: flex-start;
+		gap: 8px;
+		font-size: 12px;
+		color: var(--text-primary);
+		cursor: pointer;
+	}
+
+	.toggle-row input {
+		margin-top: 2px;
+		accent-color: var(--accent-primary, #ff5f45);
+	}
+
+	.toggle-row small {
+		display: block;
+		color: var(--text-muted);
+		font-size: 11px;
+		margin-top: 1px;
 	}
 
 	.notice {

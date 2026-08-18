@@ -55,19 +55,24 @@ class NodeFFmpegEngine implements FFmpegEngine {
 	async initialize(): Promise<void> {}
 
 	async exec(args: string[], callbacks: OperationCallback = {}): Promise<number> {
-		try {
-			execFileSync(ffmpegBin!, ['-hide_banner', '-nostdin', '-y', ...args], {
-				cwd: this.dir,
-				stdio: ['ignore', 'ignore', 'pipe'],
-				encoding: 'utf8',
-			});
-			callbacks.onProgress?.(1);
-			return 0;
-		} catch (error: any) {
-			throw new Error(
-				`ffmpeg failed\nargs: ${args.join(' ')}\n${String(error.stderr ?? error.message)}`
-			);
+		// spawnSync rather than execFileSync: stderr has to reach onLog even on
+		// success, because that is where ffmpeg prints analysis results such as
+		// loudnorm's JSON. The desktop engine forwards these lines too.
+		const run = spawnSync(ffmpegBin!, ['-hide_banner', '-nostdin', '-y', ...args], {
+			cwd: this.dir,
+			encoding: 'utf8',
+		});
+
+		const stderr = run.stderr ?? '';
+		if (callbacks.onLog) {
+			for (const line of stderr.split('\n')) callbacks.onLog(line);
 		}
+
+		if (run.status !== 0) {
+			throw new Error(`ffmpeg failed\nargs: ${args.join(' ')}\n${stderr}`);
+		}
+		callbacks.onProgress?.(1);
+		return 0;
 	}
 
 	async writeFile(name: string, data: ArrayBuffer | Uint8Array): Promise<void> {
@@ -132,6 +137,7 @@ let workDir: string;
 let sourceFile: File;
 let imageFile: File;
 let musicFile: File;
+let quietFile: File;
 
 const CONFIG: ExportConfig = {
 	format: 'mp4',
@@ -241,7 +247,8 @@ function probeStreams(bytes: Uint8Array, ext: string): { codec_type: string; cod
 /** Runs a real multi-track timeline through the pipeline. */
 async function runMultiTrack(
 	specs: { id: string; type: 'video' | 'audio'; clips: Clip[] }[],
-	extraAssets: Record<string, { file: File; name: string }>
+	extraAssets: Record<string, { file: File; name: string }>,
+	overrides: Partial<ExportConfig> = {}
 ): Promise<Uint8Array> {
 	const engine = new NodeFFmpegEngine(workDir);
 	const tracks: Track[] = specs.map((spec) => ({
@@ -261,7 +268,7 @@ async function runMultiTrack(
 		tracks,
 		[],
 		[],
-		CONFIG,
+		{ ...CONFIG, ...overrides },
 		() => {},
 		(assetId) => extraAssets[assetId] ?? { file: sourceFile, name: 'source.mp4' }
 	);
@@ -289,6 +296,23 @@ function frameIsRedAt(bytes: Uint8Array, time: number): boolean {
 	// Averaged to a single pixel, a full-frame red overlay dominates; the
 	// testsrc2 base never does.
 	return r > 100 && r > g * 2 && r > b * 2;
+}
+
+/** Mean volume over one window, for comparing one clip against another. */
+function meanVolumeBetween(bytes: Uint8Array, start: number, length: number): number {
+	const filePath = path.join(workDir, `vol-${bytes.byteLength}-${start}.mp4`);
+	writeFileSync(filePath, bytes);
+	const run = spawnSync(
+		ffmpegBin!,
+		[
+			'-hide_banner', '-ss', String(start), '-t', String(length),
+			'-i', filePath, '-af', 'volumedetect', '-f', 'null', '-',
+		],
+		{ encoding: 'utf8' }
+	);
+	const output = `${run.stderr ?? ''}${run.stdout ?? ''}`;
+	const match = /mean_volume:\s*(-?[\d.]+) dB/.exec(output);
+	return match ? parseFloat(match[1]) : -Infinity;
 }
 
 /** Mean volume in dB, to tell an audible mix from a silent stream. */
@@ -349,11 +373,79 @@ describe.skipIf(!ffmpegBin || !ffprobeBin)('export pipeline end to end', () => {
 			{ stdio: ['ignore', 'ignore', 'pipe'] }
 		);
 		musicFile = new File([readFileSync(music)], 'music.m4a', { type: 'audio/mp4' });
+
+		// A second source 12dB quieter than the first: the situation from the
+		// real project, where one clip measured -11.5dB and the next -23.0dB.
+		const quiet = path.join(workDir, 'quiet-original.mp4');
+		execFileSync(
+			ffmpegBin!,
+			[
+				'-hide_banner', '-y',
+				'-f', 'lavfi', '-i', 'testsrc2=size=640x480:rate=24:duration=3',
+				'-f', 'lavfi', '-i', 'sine=frequency=440:duration=3',
+				'-af', 'volume=-12dB',
+				'-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+				'-c:a', 'aac', '-shortest',
+				quiet,
+			],
+			{ stdio: ['ignore', 'ignore', 'pipe'] }
+		);
+		quietFile = new File([readFileSync(quiet)], 'quiet.mp4', { type: 'video/mp4' });
 	});
 
 	afterAll(() => {
 		if (workDir) rmSync(workDir, { recursive: true, force: true });
 	});
+
+	it('brings a quiet clip up to match a loud one', async () => {
+		// Without this the export reproduces both faithfully and the second
+		// half sounds like the volume was turned down.
+		const loud = baseClip({ id: 'loud', trackId: 'track-1', timelineStart: 0, duration: 2 });
+		const quiet = createClip({
+			id: 'quiet',
+			name: 'quiet.mp4',
+			type: 'video',
+			assetId: 'asset-quiet',
+			trackId: 'track-1',
+			timelineStart: 2,
+			duration: 2,
+		});
+
+		const bytes = await runMultiTrack(
+			[{ id: 'track-1', type: 'video', clips: [loud, quiet] }],
+			{ 'asset-quiet': { file: quietFile, name: 'quiet.mp4' } },
+			{ normalizeLoudness: true }
+		);
+
+		const first = meanVolumeBetween(bytes, 0.2, 1.5);
+		const second = meanVolumeBetween(bytes, 2.2, 1.5);
+		expect(Math.abs(first - second)).toBeLessThan(3);
+	}, 180_000);
+
+	it('leaves the mismatch alone when matching is off', async () => {
+		// The negative control: without it the test above could pass because
+		// the sources were never different in the first place.
+		const loud = baseClip({ id: 'loud', trackId: 'track-1', timelineStart: 0, duration: 2 });
+		const quiet = createClip({
+			id: 'quiet',
+			name: 'quiet.mp4',
+			type: 'video',
+			assetId: 'asset-quiet',
+			trackId: 'track-1',
+			timelineStart: 2,
+			duration: 2,
+		});
+
+		const bytes = await runMultiTrack(
+			[{ id: 'track-1', type: 'video', clips: [loud, quiet] }],
+			{ 'asset-quiet': { file: quietFile, name: 'quiet.mp4' } },
+			{ normalizeLoudness: false }
+		);
+
+		const first = meanVolumeBetween(bytes, 0.2, 1.5);
+		const second = meanVolumeBetween(bytes, 2.2, 1.5);
+		expect(Math.abs(first - second)).toBeGreaterThan(6);
+	}, 180_000);
 
 	it('keeps an image placed on a second video track', async () => {
 		// The bug: the export read one track, so this image showed in the
