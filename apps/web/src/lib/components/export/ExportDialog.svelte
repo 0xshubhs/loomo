@@ -3,7 +3,7 @@
 	import { requiredCredits, formatCredits } from '$lib/utils/attribution.js';
 	import { copyToClipboard } from '$lib/utils/clipboard.js';
 	import type { ExportConfig, ExportFormat, ExportProgress, Resolution } from '$lib/types/index.js';
-	import { FORMAT_DEFAULTS } from '$lib/types/export.js';
+	import { FORMAT_DEFAULTS, BITRATE_FOR_RESOLUTION } from '$lib/types/export.js';
 	import { scaleToResolution } from '$lib/utils/aspect-ratios.js';
 	import Modal from '../shared/Modal.svelte';
 	import Button from '../shared/Button.svelte';
@@ -42,12 +42,32 @@
 	let format = $state<ExportFormat>('mp4');
 	let resolution = $state<Resolution>('1080p');
 	let fps = $state(30);
-	let videoBitrate = $state(5000);
 	let audioBitrate = $state(192);
 	let quality = $state(23);
 	let exporting = $state(false);
 
+	// Follows the resolution until the user moves the slider themselves. One
+	// fixed default meant 4K was encoded at a 1080p bitrate, which looks worse
+	// than the source it came from.
+	let bitrateOverride = $state<number | null>(null);
+	let videoBitrate = $derived(bitrateOverride ?? BITRATE_FOR_RESOLUTION[resolution]);
+
+	/**
+	 * The largest video in the timeline, which is the most detail an export can
+	 * possibly contain. Anything above it is upscaling.
+	 */
+	let sourceHeight = $derived.by(() => {
+		const heights = timeline.tracks
+			.flatMap((t) => t.clips)
+			.map((clip) => mediaLibrary.getAssetById(clip.assetId)?.metadata.height ?? 0)
+			.filter((h) => h > 0);
+		return heights.length > 0 ? Math.max(...heights) : 0;
+	});
+
+
 	let exportDimensions = $derived(scaleToResolution(project.aspectRatio.label, resolution as '4k' | '1080p' | '720p' | '480p'));
+
+	let upscaling = $derived(sourceHeight > 0 && exportDimensions.height > sourceHeight);
 
 	let config = $derived<ExportConfig>({
 		format,
@@ -121,13 +141,30 @@
 			{#if !isAudioOnly}
 				<Dropdown label="Resolution" value={resolution} options={resolutionOptions} onchange={(v) => resolution = v as Resolution} />
 
+				{#if upscaling}
+					<!-- Picking 4K for 720p footage produces a 4K file that looks
+					     exactly like 720p and is many times the size. Saying so
+					     beforehand is cheaper than a 13-minute render. -->
+					<div class="notice">
+						Your footage is {sourceHeight}p. Exporting at {exportDimensions.height}p
+						upscales it — the file gets larger, not sharper.
+					</div>
+				{/if}
+
 				<div class="field-row">
 					<Slider label="FPS" bind:value={fps} min={isGif ? 10 : 15} max={isGif ? 30 : 60} step={1} />
 				</div>
 
 				{#if !isGif}
 					<div class="field-row">
-						<Slider label="Video Bitrate (kbps)" bind:value={videoBitrate} min={500} max={50000} step={500} />
+						<Slider
+							label="Video Bitrate (kbps)"
+							value={videoBitrate}
+							oninput={(v) => (bitrateOverride = v)}
+							min={500}
+							max={60000}
+							step={500}
+						/>
 					</div>
 				{/if}
 			{/if}
@@ -197,6 +234,16 @@
 		color: var(--text-muted);
 		padding: 8px 0;
 		border-top: 1px solid var(--border-primary);
+	}
+
+	.notice {
+		padding: 8px 10px;
+		border: 1px solid rgba(255, 176, 32, 0.35);
+		border-radius: 6px;
+		background: rgba(255, 176, 32, 0.08);
+		color: var(--text-primary);
+		font-size: 11px;
+		line-height: 1.45;
 	}
 
 	.gif-warning {

@@ -34,6 +34,22 @@ export const RESOLUTION_MAP: Record<Resolution, { width: number; height: number 
 	'custom': { width: 1920, height: 1080 },
 };
 
+/**
+ * Sensible video bitrate for a resolution, in kbps.
+ *
+ * One default across every tier meant 4K was encoded at a 1080p bitrate — a
+ * 3840x2160 file that looks worse than its own source, because 5 Mbps spread
+ * over four times the pixels is roughly a quarter of the detail per pixel.
+ * These follow the usual H.264 delivery guidance for 30fps.
+ */
+export const BITRATE_FOR_RESOLUTION: Record<Resolution, number> = {
+	'4k': 35000,
+	'1080p': 8000,
+	'720p': 5000,
+	'480p': 2500,
+	'custom': 8000,
+};
+
 export const FORMAT_DEFAULTS: Record<ExportFormat, { videoCodec: VideoCodec; audioCodec: AudioCodec }> = {
 	mp4: { videoCodec: 'libx264', audioCodec: 'aac' },
 	webm: { videoCodec: 'libvpx-vp9', audioCodec: 'libopus' },

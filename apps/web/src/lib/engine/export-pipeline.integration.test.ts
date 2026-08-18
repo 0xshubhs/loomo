@@ -157,14 +157,14 @@ function keyframeTrack(property: KeyframeTrack['property'], values: [number, num
 	};
 }
 
-async function runExport(clips: Clip[]): Promise<Uint8Array> {
+async function runExport(clips: Clip[], overrides: Partial<ExportConfig> = {}): Promise<Uint8Array> {
 	const engine = new NodeFFmpegEngine(workDir);
 	const result = await exportTimeline(
 		engine,
 		videoTrack(clips),
 		[],
 		[],
-		CONFIG,
+		{ ...CONFIG, ...overrides },
 		() => {},
 		() => ({ file: sourceFile, name: 'source.mp4' })
 	);
@@ -198,6 +198,18 @@ function probe(bytes: Uint8Array): { duration: number; width: number; height: nu
 	};
 }
 
+/** Every stream in the file, so an export can be checked for what it must NOT contain. */
+function probeStreams(bytes: Uint8Array, ext: string): { codec_type: string; codec_name: string }[] {
+	const probePath = path.join(workDir, `probe-streams-${bytes.byteLength}.${ext}`);
+	writeFileSync(probePath, bytes);
+	const output = execFileSync(
+		ffprobeBin!,
+		['-v', 'error', '-show_entries', 'stream=codec_type,codec_name', '-of', 'json', probePath],
+		{ encoding: 'utf8' }
+	);
+	return JSON.parse(output).streams ?? [];
+}
+
 async function exportAndProbe(clips: Clip[]) {
 	const bytes = await runExport(clips);
 	expect(bytes.byteLength).toBeGreaterThan(1000);
@@ -229,6 +241,30 @@ describe.skipIf(!ffmpegBin || !ffprobeBin)('export pipeline end to end', () => {
 	afterAll(() => {
 		if (workDir) rmSync(workDir, { recursive: true, force: true });
 	});
+
+	it('exports audio only to M4A, with no video stream', async () => {
+		// The format list offered M4A from the start, but the pipeline had no
+		// branch for it and wrote an H.264 stream into the file.
+		const bytes = await runExport([baseClip()], { format: 'm4a' });
+		const streams = probeStreams(bytes, 'm4a');
+
+		expect(streams.map((s) => s.codec_type)).toEqual(['audio']);
+	}, 60_000);
+
+	it('produces a real GIF rather than failing on the muxer', async () => {
+		// Previously: "gif muxer supports only codec gif for type video".
+		const bytes = await runExport([baseClip()], { format: 'gif' });
+		const streams = probeStreams(bytes, 'gif');
+
+		expect(streams[0]?.codec_name).toBe('gif');
+	}, 120_000);
+
+	it('gives the GIF the frames it should have', async () => {
+		const bytes = await runExport([baseClip()], { format: 'gif' });
+
+		expect(bytes.byteLength).toBeGreaterThan(1000);
+		expect(probe(bytes).width).toBeGreaterThan(0);
+	}, 120_000);
 
 	it('exports a plain clip', async () => {
 		const result = await exportAndProbe([baseClip()]);

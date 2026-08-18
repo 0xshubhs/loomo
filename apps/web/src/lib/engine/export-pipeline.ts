@@ -142,7 +142,18 @@ export async function exportTimeline(
 
 	let result: ExportResult;
 
-	if (hasEffects) {
+	if (config.format === 'm4a') {
+		// Audio only. Without this the pipeline encoded video into the .m4a and
+		// called it an audio export.
+		result = await exportAudioOnly(ffmpeg, sortedClips, config, outputFile, getAssetFile, progress);
+	} else if (config.format === 'gif') {
+		// GIF needs its own muxer and a colour palette; the normal path handed
+		// it libx264, which the gif muxer rejects outright.
+		result = await exportGif(
+			ffmpeg, tracks, transitions, textOverlays, config, targetWidth, targetHeight,
+			getAssetFile, onProgress, shapeOverlays, captionTrack, annotations, startTime
+		);
+	} else if (hasEffects) {
 		// Strategy C: filter_complex — text overlays or transitions need all clips
 		result = await exportFilterComplex(
 			ffmpeg, sortedClips, textOverlays, shapeOverlays, config, targetWidth, targetHeight, outputFile, getAssetFile, progress, captionTrack, annotations
@@ -211,6 +222,201 @@ function probeVideoResolution(file: File): Promise<{ width: number; height: numb
 
 		video.src = url;
 	});
+}
+
+// ── Audio-only export ───────────────────────────────────────────────
+
+/**
+ * Renders just the audio.
+ *
+ * The format list has offered M4A since the beginning, but the pipeline had no
+ * branch for it: the normal video strategies ran, wrote an H.264 stream into a
+ * file named .m4a, and reported success. The result played as video in
+ * anything that ignored the extension.
+ */
+async function exportAudioOnly(
+	ffmpeg: FFmpegEngine,
+	sortedClips: Clip[],
+	config: ExportConfig,
+	outputFile: string,
+	getAssetFile: AssetResolver,
+	progress: (stage: ExportProgress['stage'], p: number) => void
+): Promise<ExportResult> {
+	const temps: string[] = [];
+	const segments: string[] = [];
+	const total = sortedClips.length;
+
+	for (let i = 0; i < total; i++) {
+		const clip = sortedClips[i];
+		const asset = getAssetFile(clip.assetId);
+		if (!asset) throw new Error(`Asset not found for clip "${clip.name}"`);
+
+		progress('preparing', (i / total) * 0.4);
+		const input = await prepareInput(ffmpeg, asset, `asrc_${i}.${getExt(asset.name)}`);
+		if (input.disposable) temps.push(input.path);
+
+		const segment = `aseg_${i}.m4a`;
+		const args: string[] = [];
+		if (clip.sourceStart > 0.01) args.push('-ss', String(clip.sourceStart));
+		args.push('-i', input.path);
+		args.push('-t', String(clip.duration));
+		// -vn is the whole point: no video stream reaches the muxer.
+		args.push('-vn');
+
+		const audioFilters = buildFfmpegAudioFilters(clip);
+		if (audioFilters.length > 0) args.push('-af', audioFilters.join(','));
+
+		args.push('-c:a', config.audioCodec);
+		if (config.audioBitrate > 0) args.push('-b:a', `${config.audioBitrate}k`);
+		args.push('-y', segment);
+
+		progress('encoding', 0.4 + (i / total) * 0.4);
+		const exitCode = await ffmpeg.exec(args);
+		if (exitCode !== 0) {
+			await cleanup(ffmpeg, [...temps, ...segments, segment]);
+			throw new Error(`FFmpeg audio export failed for clip ${i + 1} (exit code ${exitCode})`);
+		}
+		segments.push(segment);
+	}
+
+	if (segments.length === 1) {
+		progress('finalizing', 0.9);
+		// Rename by copy: the caller expects the agreed output name.
+		const exitCode = await ffmpeg.exec(['-i', segments[0], '-c', 'copy', '-y', outputFile]);
+		if (exitCode !== 0) {
+			await cleanup(ffmpeg, [...temps, ...segments]);
+			throw new Error(`FFmpeg audio export failed (exit code ${exitCode})`);
+		}
+	} else {
+		progress('rendering', 0.85);
+		const listPath = 'aconcat_list.txt';
+		const list = segments.map((f) => `file '${f}'`).join('\n');
+		await ffmpeg.writeFile(listPath, new TextEncoder().encode(list).buffer);
+		temps.push(listPath);
+
+		const exitCode = await ffmpeg.exec([
+			'-f', 'concat', '-safe', '0', '-i', listPath,
+			'-c', 'copy', '-y', outputFile,
+		]);
+		if (exitCode !== 0) {
+			await cleanup(ffmpeg, [...temps, ...segments]);
+			throw new Error(`FFmpeg audio concat failed (exit code ${exitCode})`);
+		}
+	}
+
+	progress('finalizing', 0.95);
+	const result = await finishOutput(ffmpeg, outputFile, config.format);
+	await cleanup(ffmpeg, [...temps, ...segments]);
+	if (!result.scratchName) await cleanup(ffmpeg, [outputFile]);
+	return result;
+}
+
+// ── Animated GIF ────────────────────────────────────────────────────
+
+/** Above this, a GIF is unusable regardless of what the timeline holds. */
+const GIF_MAX_WIDTH = 640;
+const GIF_FPS = 15;
+
+/**
+ * Renders the timeline, then converts it to GIF through a generated palette.
+ *
+ * GIF was offered in the format list but never implemented: the gif muxer
+ * accepts only the gif codec, so being handed libx264 made it fail with
+ * "gif muxer supports only codec gif for type video".
+ *
+ * The video is assembled by the ordinary strategies first — one nested call,
+ * with the format forced to MP4 so it cannot recurse again — because every
+ * effect, transition and overlay has to be applied before the colour
+ * quantisation, not after.
+ */
+async function exportGif(
+	ffmpeg: FFmpegEngine,
+	tracks: Track[],
+	transitions: Transition[],
+	textOverlays: TextOverlay[],
+	config: ExportConfig,
+	targetWidth: number,
+	targetHeight: number,
+	getAssetFile: AssetResolver,
+	onProgress: (progress: ExportProgress) => void,
+	shapeOverlays: ShapeOverlay[],
+	captionTrack: CaptionTrack | undefined,
+	annotations: Annotation[],
+	startTime: number
+): Promise<ExportResult> {
+	const intermediate = await exportTimeline(
+		ffmpeg,
+		tracksWithoutAudio(tracks),
+		transitions,
+		textOverlays,
+		{ ...config, format: 'mp4', videoCodec: 'libx264', audioCodec: 'aac' },
+		// Report the render as the first 70% of the job; the palette passes
+		// that follow are not instant on a long timeline.
+		(p) => onProgress({ ...p, progress: p.progress * 0.7 }),
+		getAssetFile,
+		shapeOverlays,
+		captionTrack,
+		annotations
+	);
+
+	const source = await materialise(ffmpeg, intermediate, 'gif_source.mp4');
+	const palette = 'gif_palette.png';
+	const width = Math.min(GIF_MAX_WIDTH, targetWidth);
+	const scale = `fps=${GIF_FPS},scale=${width}:-1:flags=lanczos`;
+
+	// Two passes: one to choose 256 colours for this clip, one to apply them.
+	// A single pass uses a fixed palette and bands badly on real footage.
+	const paletteExit = await ffmpeg.exec([
+		'-i', source, '-vf', `${scale},palettegen=stats_mode=diff`, '-y', palette,
+	]);
+	if (paletteExit !== 0) {
+		await cleanup(ffmpeg, [source, palette]);
+		throw new Error(`GIF palette generation failed (exit code ${paletteExit})`);
+	}
+
+	const outputFile = `output.gif`;
+	const exit = await ffmpeg.exec([
+		'-i', source, '-i', palette,
+		'-lavfi', `${scale}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5`,
+		'-loop', '0',
+		'-y', outputFile,
+	]);
+	if (exit !== 0) {
+		await cleanup(ffmpeg, [source, palette, outputFile]);
+		throw new Error(`GIF encoding failed (exit code ${exit})`);
+	}
+
+	const result = await finishOutput(ffmpeg, outputFile, 'gif');
+	await cleanup(ffmpeg, [source, palette]);
+	if (!result.scratchName) await cleanup(ffmpeg, [outputFile]);
+
+	onProgress({
+		stage: 'done', progress: 1, currentFrame: 0, totalFrames: 0,
+		elapsed: Date.now() - startTime, eta: 0, outputSize: result.size,
+	});
+	return result;
+}
+
+/** A GIF carries no sound, so the audio tracks are dropped before rendering. */
+function tracksWithoutAudio(tracks: Track[]): Track[] {
+	return tracks.filter((track) => track.type !== 'audio');
+}
+
+/**
+ * Gives a nested export result a filename the next ffmpeg call can open.
+ *
+ * On disk it already has one. In the wasm engine the bytes came back as a Blob
+ * and have to go back into the virtual filesystem.
+ */
+async function materialise(
+	ffmpeg: FFmpegEngine,
+	result: ExportResult,
+	fallbackName: string
+): Promise<string> {
+	if (result.scratchName) return result.scratchName;
+	if (!result.blob) throw new Error('Export produced neither a file nor bytes');
+	await ffmpeg.writeFile(fallbackName, await result.blob.arrayBuffer());
+	return fallbackName;
 }
 
 // ── Strategy A1: Single clip stream copy ────────────────────────────
@@ -354,6 +560,7 @@ async function exportReencodeConcat(
 ): Promise<ExportResult> {
 	const encodedFiles: string[] = [];
 	const total = sortedClips.length;
+	const tuning = encoderTuning(ffmpeg);
 
 	for (let i = 0; i < total; i++) {
 		const clip = sortedClips[i];
@@ -436,7 +643,7 @@ async function exportReencodeConcat(
 		}
 
 		args.push('-c:v', config.videoCodec);
-		args.push('-preset', 'ultrafast'); // Minimize memory + speed
+		args.push('-preset', tuning.preset);
 		args.push('-c:a', config.audioCodec);
 
 		if (config.videoBitrate > 0) {
@@ -447,7 +654,7 @@ async function exportReencodeConcat(
 		}
 
 		args.push('-r', String(config.fps));
-		args.push('-threads', '1'); // Minimize peak memory
+		args.push('-threads', tuning.threads);
 		args.push('-movflags', '+faststart');
 		args.push('-y', encodedPath);
 
@@ -524,6 +731,8 @@ async function exportFilterComplex(
 	captionTrack?: CaptionTrack,
 	annotations: Annotation[] = []
 ): Promise<ExportResult> {
+	const tuning = encoderTuning(ffmpeg);
+
 	// Write all source files (dedup by assetId)
 	const inputPaths: string[] = [];
 	const writtenAssets = new Map<string, string>();
@@ -834,7 +1043,7 @@ async function exportFilterComplex(
 	args.push('-map', `[${videoOut}]`);
 	args.push('-map', '[outa]');
 	args.push('-c:v', config.videoCodec);
-	args.push('-preset', 'ultrafast'); // Memory-efficient
+	args.push('-preset', tuning.preset);
 	args.push('-c:a', config.audioCodec);
 
 	if (config.videoBitrate > 0) {
@@ -845,7 +1054,7 @@ async function exportFilterComplex(
 	}
 
 	args.push('-r', String(config.fps));
-	args.push('-threads', '1'); // Minimize peak memory
+	args.push('-threads', tuning.threads);
 	args.push('-movflags', '+faststart');
 	args.push('-y', outputFile);
 
@@ -1157,6 +1366,20 @@ function validateFileSize(ffmpeg: FFmpegEngine, bytes: number): void {
 		`~${mb(limit)}MB. Trim the clip shorter, or use the desktop app, which ` +
 		`has no such limit.`
 	);
+}
+
+/**
+ * Encoder settings that depend on where ffmpeg is running.
+ *
+ * `ultrafast` and a single thread were chosen to keep ffmpeg.wasm inside its
+ * heap, and that reasoning does not apply to a native binary — it just made 4K
+ * exports both slow and blocky. The wasm path keeps the old numbers because
+ * the constraint there is real.
+ */
+function encoderTuning(ffmpeg: FFmpegEngine): { preset: string; threads: string } {
+	return ffmpeg.persistentStore
+		? { preset: 'medium', threads: '0' }
+		: { preset: 'ultrafast', threads: '1' };
 }
 
 export interface PreparedInput {
