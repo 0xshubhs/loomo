@@ -2,6 +2,17 @@ import { isDesktop } from '$lib/desktop/env.js';
 import { FFmpegBridge } from './ffmpeg-bridge.svelte.js';
 import { NativeFFmpegEngine } from './native-ffmpeg.svelte.js';
 
+/** What a probe reports about a stored file. */
+export interface MediaProbe {
+	duration: number;
+	width: number;
+	height: number;
+	fps: number;
+	codec: string;
+	audioCodec: string;
+	bitrate: number;
+}
+
 export type OperationCallback = {
 	onProgress?: (progress: number) => void;
 	onLog?: (message: string) => void;
@@ -65,6 +76,12 @@ export interface FFmpegEngine {
 	fileExists?(path: string): Promise<boolean>;
 	/** Byte length of a stored file, for reporting an output's size. */
 	fileSize?(path: string): Promise<number>;
+	/**
+	 * Reads a stored file's stream layout. Used to decide whether a rendered
+	 * file has audio to mix against — mapping a stream that is not there fails
+	 * the whole command.
+	 */
+	probe?(path: string): Promise<MediaProbe>;
 	terminate(): void;
 }
 

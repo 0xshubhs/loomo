@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync, rmSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -91,6 +91,32 @@ class NodeFFmpegEngine implements FFmpegEngine {
 		return (await this.fileSize(name)) > 0;
 	}
 
+	async probe(name: string) {
+		const output = execFileSync(
+			ffprobeBin!,
+			[
+				'-v', 'error',
+				'-show_entries', 'format=duration:stream=codec_type,codec_name,width,height',
+				'-of', 'json',
+				path.join(this.dir, name),
+			],
+			{ encoding: 'utf8' }
+		);
+		const json = JSON.parse(output);
+		const streams: any[] = json.streams ?? [];
+		const video = streams.find((s) => s.codec_type === 'video') ?? {};
+		const audio = streams.find((s) => s.codec_type === 'audio');
+		return {
+			duration: parseFloat(json.format?.duration ?? '0'),
+			width: video.width ?? 0,
+			height: video.height ?? 0,
+			fps: 0,
+			codec: video.codec_name ?? '',
+			audioCodec: audio?.codec_name ?? '',
+			bitrate: 0,
+		};
+	}
+
 	async deleteFile(name: string): Promise<void> {
 		try {
 			unlinkSync(path.join(this.dir, name));
@@ -104,6 +130,8 @@ class NodeFFmpegEngine implements FFmpegEngine {
 
 let workDir: string;
 let sourceFile: File;
+let imageFile: File;
+let musicFile: File;
 
 const CONFIG: ExportConfig = {
 	format: 'mp4',
@@ -210,6 +238,75 @@ function probeStreams(bytes: Uint8Array, ext: string): { codec_type: string; cod
 	return JSON.parse(output).streams ?? [];
 }
 
+/** Runs a real multi-track timeline through the pipeline. */
+async function runMultiTrack(
+	specs: { id: string; type: 'video' | 'audio'; clips: Clip[] }[],
+	extraAssets: Record<string, { file: File; name: string }>
+): Promise<Uint8Array> {
+	const engine = new NodeFFmpegEngine(workDir);
+	const tracks: Track[] = specs.map((spec) => ({
+		id: spec.id,
+		name: spec.id,
+		type: spec.type,
+		clips: spec.clips,
+		muted: false,
+		locked: false,
+		visible: true,
+		height: 80,
+		volume: 1,
+	}));
+
+	const result = await exportTimeline(
+		engine,
+		tracks,
+		[],
+		[],
+		CONFIG,
+		() => {},
+		(assetId) => extraAssets[assetId] ?? { file: sourceFile, name: 'source.mp4' }
+	);
+
+	expect(result.scratchName).toBeTruthy();
+	return new Uint8Array(readFileSync(path.join(workDir, result.scratchName!)));
+}
+
+/** Whether the frame at `time` is dominated by red — the overlay's colour. */
+function frameIsRedAt(bytes: Uint8Array, time: number): boolean {
+	const filePath = path.join(workDir, `frame-src-${bytes.byteLength}-${time}.mp4`);
+	writeFileSync(filePath, bytes);
+	const framePath = path.join(workDir, `frame-${bytes.byteLength}-${time}.rawvideo`);
+	execFileSync(
+		ffmpegBin!,
+		[
+			'-hide_banner', '-v', 'error', '-y',
+			'-ss', String(time), '-i', filePath,
+			'-frames:v', '1', '-vf', 'scale=1:1', '-f', 'rawvideo', '-pix_fmt', 'rgb24',
+			framePath,
+		],
+		{ stdio: ['ignore', 'ignore', 'pipe'] }
+	);
+	const [r, g, b] = readFileSync(framePath);
+	// Averaged to a single pixel, a full-frame red overlay dominates; the
+	// testsrc2 base never does.
+	return r > 100 && r > g * 2 && r > b * 2;
+}
+
+/** Mean volume in dB, to tell an audible mix from a silent stream. */
+function meanVolume(bytes: Uint8Array): number {
+	const filePath = path.join(workDir, `vol-${bytes.byteLength}.mp4`);
+	writeFileSync(filePath, bytes);
+	// volumedetect reports on stderr, and ffmpeg exits 0, so the value has to
+	// be read from the stream rather than caught from a failure.
+	const run = spawnSync(
+		ffmpegBin!,
+		['-hide_banner', '-i', filePath, '-af', 'volumedetect', '-f', 'null', '-'],
+		{ encoding: 'utf8' }
+	);
+	const output = `${run.stderr ?? ''}${run.stdout ?? ''}`;
+	const match = /mean_volume:\s*(-?[\d.]+) dB/.exec(output);
+	return match ? parseFloat(match[1]) : -Infinity;
+}
+
 async function exportAndProbe(clips: Clip[]) {
 	const bytes = await runExport(clips);
 	expect(bytes.byteLength).toBeGreaterThan(1000);
@@ -236,11 +333,112 @@ describe.skipIf(!ffmpegBin || !ffprobeBin)('export pipeline end to end', () => {
 		);
 		const bytes = readFileSync(source);
 		sourceFile = new File([bytes], 'source.mp4', { type: 'video/mp4' });
+
+		const image = path.join(workDir, 'overlay-original.png');
+		execFileSync(
+			ffmpegBin!,
+			['-hide_banner', '-y', '-f', 'lavfi', '-i', 'color=c=red:s=320x240:d=1', '-frames:v', '1', image],
+			{ stdio: ['ignore', 'ignore', 'pipe'] }
+		);
+		imageFile = new File([readFileSync(image)], 'overlay.png', { type: 'image/png' });
+
+		const music = path.join(workDir, 'music-original.m4a');
+		execFileSync(
+			ffmpegBin!,
+			['-hide_banner', '-y', '-f', 'lavfi', '-i', 'sine=frequency=880:duration=3', '-c:a', 'aac', music],
+			{ stdio: ['ignore', 'ignore', 'pipe'] }
+		);
+		musicFile = new File([readFileSync(music)], 'music.m4a', { type: 'audio/mp4' });
 	});
 
 	afterAll(() => {
 		if (workDir) rmSync(workDir, { recursive: true, force: true });
 	});
+
+	it('keeps an image placed on a second video track', async () => {
+		// The bug: the export read one track, so this image showed in the
+		// preview and was simply absent from the file.
+		const base = baseClip({ id: 'base-clip', trackId: 'track-1' });
+		const overlay = createClip({
+			id: 'img-clip',
+			name: 'overlay.png',
+			type: 'image',
+			assetId: 'asset-image',
+			trackId: 'track-2',
+			timelineStart: 0.5,
+			duration: 1,
+		});
+
+		const bytes = await runMultiTrack(
+			[
+				{ id: 'track-1', type: 'video', clips: [base] },
+				{ id: 'track-2', type: 'video', clips: [overlay] },
+			],
+			{ 'asset-image': { file: imageFile, name: 'overlay.png' } }
+		);
+
+		// The overlay is a solid red rectangle; if compositing ran, red appears
+		// during its span and not before it.
+		expect(frameIsRedAt(bytes, 1.0)).toBe(true);
+	}, 120_000);
+
+	it('shows that overlay only within its own span', async () => {
+		const base = baseClip({ id: 'base-clip', trackId: 'track-1', duration: 3 });
+		const overlay = createClip({
+			id: 'img-clip',
+			name: 'overlay.png',
+			type: 'image',
+			assetId: 'asset-image',
+			trackId: 'track-2',
+			timelineStart: 2,
+			duration: 1,
+		});
+
+		const bytes = await runMultiTrack(
+			[
+				{ id: 'track-1', type: 'video', clips: [base] },
+				{ id: 'track-2', type: 'video', clips: [overlay] },
+			],
+			{ 'asset-image': { file: imageFile, name: 'overlay.png' } }
+		);
+
+		expect(frameIsRedAt(bytes, 0.5)).toBe(false);
+		expect(frameIsRedAt(bytes, 2.5)).toBe(true);
+	}, 120_000);
+
+	it('keeps a music clip placed on an audio track', async () => {
+		const base = baseClip({ id: 'base-clip', trackId: 'track-1', duration: 3 });
+		const music = createClip({
+			id: 'music-clip',
+			name: 'music.m4a',
+			type: 'audio',
+			assetId: 'asset-music',
+			trackId: 'track-a',
+			timelineStart: 0,
+			duration: 2,
+		});
+
+		const bytes = await runMultiTrack(
+			[
+				{ id: 'track-1', type: 'video', clips: [base] },
+				{ id: 'track-a', type: 'audio', clips: [music] },
+			],
+			{ 'asset-music': { file: musicFile, name: 'music.m4a' } }
+		);
+
+		const streams = probeStreams(bytes, 'mp4');
+		expect(streams.filter((s) => s.codec_type === 'audio')).toHaveLength(1);
+		// The mix must be audible, not a silent stream.
+		expect(meanVolume(bytes)).toBeGreaterThan(-60);
+	}, 120_000);
+
+	it('leaves a single-track timeline exactly as it was', async () => {
+		// The composite pass must be inert when there is nothing to composite.
+		const result = await exportAndProbe([baseClip()]);
+
+		expect(result.width).toBe(854);
+		expect(result.height).toBe(480);
+	}, 60_000);
 
 	it('exports audio only to M4A, with no video stream', async () => {
 		// The format list offered M4A from the start, but the pipeline had no

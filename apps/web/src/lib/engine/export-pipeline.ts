@@ -7,6 +7,14 @@ import { RESOLUTION_MAP } from '$lib/types/export.js';
 import { DEFAULT_CLIP_FILTERS, DEFAULT_TRANSFORM, DEFAULT_CROP, DEFAULT_CHROMA_KEY, DEFAULT_CLIP_POSITION } from '$lib/types/timeline.js';
 import { hasNonDefaultFilters } from '$lib/utils/filter-presets.js';
 import { hasNonDefaultPosition } from '$lib/utils/pip-presets.js';
+import {
+	planComposite,
+	buildCompositeFilter,
+	inputArgsFor,
+	isEmptyPlan,
+	type CompositePlan,
+	type CompositeSource,
+} from './composite-tracks.js';
 import { chromaColorToFFmpegHex } from '$lib/utils/chroma-key.js';
 import type { Annotation } from '$lib/types/annotations.js';
 import { buildAnnotationOverlays, hasAnnotationOverlays } from './ffmpeg-annotations.js';
@@ -171,6 +179,16 @@ export async function exportTimeline(
 		);
 	}
 
+	// Anything on a second video track or an audio track is laid over the
+	// finished base render. Until this existed the export read one track and
+	// silently discarded the rest.
+	if (config.format !== 'gif' && config.format !== 'm4a') {
+		result = await compositeExtraTracks(
+			ffmpeg, result, tracks, videoTrack.id, config,
+			targetWidth, targetHeight, getAssetFile, progress
+		);
+	}
+
 	onProgress({
 		stage: 'done',
 		progress: 1,
@@ -222,6 +240,138 @@ function probeVideoResolution(file: File): Promise<{ width: number; height: numb
 
 		video.src = url;
 	});
+}
+
+// ── Compositing the tracks the base render did not cover ────────────
+
+/**
+ * Lays every other track over the finished base render.
+ *
+ * Done as a second pass rather than by rebuilding the main filtergraph: the
+ * existing strategies already handle effects, transitions, speed and
+ * keyframes, and none of that has to change for an image to appear on top of
+ * it. The cost is one extra encode of an already-rendered file.
+ */
+async function compositeExtraTracks(
+	ffmpeg: FFmpegEngine,
+	base: ExportResult,
+	tracks: Track[],
+	baseTrackId: string,
+	config: ExportConfig,
+	width: number,
+	height: number,
+	getAssetFile: AssetResolver,
+	progress: (stage: ExportProgress['stage'], p: number) => void
+): Promise<ExportResult> {
+	const { overlayClips, audioClips } = planComposite(tracks, baseTrackId);
+	if (overlayClips.length === 0 && audioClips.length === 0) return base;
+
+	progress('rendering', 0.9);
+
+	const temps: string[] = [];
+	const basePath = await materialise(ffmpeg, base, 'composite_base.mp4');
+	if (!base.scratchName) temps.push(basePath);
+
+	const plan: CompositePlan = { overlays: [], audio: [] };
+	for (const clip of overlayClips) {
+		const source = await sourceFor(ffmpeg, clip, getAssetFile, temps);
+		if (source) plan.overlays.push(source);
+	}
+	for (const clip of audioClips) {
+		const source = await sourceFor(ffmpeg, clip, getAssetFile, temps);
+		if (source) plan.audio.push(source);
+	}
+	if (isEmptyPlan(plan)) return base;
+
+	const baseHasAudio = await hasAudioStream(ffmpeg, basePath);
+	const { filter, videoLabel, audioLabel } = buildCompositeFilter(plan, {
+		width,
+		height,
+		fps: config.fps,
+		baseHasAudio,
+	});
+
+	const tuning = encoderTuning(ffmpeg);
+	const outputFile = `composited.${config.format}`;
+	const args: string[] = ['-i', basePath];
+	for (const source of plan.overlays) args.push(...inputArgsFor(source, config.fps));
+	for (const source of plan.audio) args.push(...inputArgsFor(source, config.fps));
+
+	if (filter) args.push('-filter_complex', filter);
+	args.push('-map', videoLabel.includes(':') ? videoLabel : `[${videoLabel}]`);
+	if (audioLabel) {
+		args.push('-map', audioLabel.includes(':') ? audioLabel : `[${audioLabel}]`);
+	}
+
+	args.push('-c:v', config.videoCodec, '-preset', tuning.preset);
+	if (config.videoBitrate > 0) args.push('-b:v', `${config.videoBitrate}k`);
+	if (audioLabel) {
+		args.push('-c:a', config.audioCodec);
+		if (config.audioBitrate > 0) args.push('-b:a', `${config.audioBitrate}k`);
+	}
+	// The composite must not outlast the base render just because an overlay
+	// was dragged past the end of the timeline. A probe that reports nothing
+	// means no cap — truncating to zero would produce an empty file.
+	const baseDuration = await durationOf(ffmpeg, basePath);
+	if (baseDuration > 0) args.push('-t', String(baseDuration));
+	args.push('-threads', tuning.threads, '-movflags', '+faststart', '-y', outputFile);
+
+	const exitCode = await ffmpeg.exec(args, {
+		onProgress: (p) => progress('encoding', 0.9 + p * 0.08),
+	});
+	if (exitCode !== 0) {
+		await cleanup(ffmpeg, [...temps, outputFile]);
+		throw new Error(`Compositing extra tracks failed (exit code ${exitCode})`);
+	}
+
+	const result = await finishOutput(ffmpeg, outputFile, config.format);
+	// The base render has been superseded, and so have any staged copies this
+	// pass made; sources staged at import are left alone by `cleanup` callers.
+	await cleanup(ffmpeg, temps);
+	if (base.scratchName) await cleanup(ffmpeg, [base.scratchName]);
+	if (!result.scratchName) await cleanup(ffmpeg, [outputFile]);
+	return result;
+}
+
+/** Stages a clip's asset if needed and describes it for the filtergraph. */
+async function sourceFor(
+	ffmpeg: FFmpegEngine,
+	clip: Clip,
+	getAssetFile: AssetResolver,
+	temps: string[]
+): Promise<CompositeSource | null> {
+	const asset = getAssetFile(clip.assetId);
+	if (!asset) return null;
+
+	const input = await prepareInput(ffmpeg, asset, `ovl_${clip.id}.${getExt(asset.name)}`);
+	if (input.disposable) temps.push(input.path);
+	return { path: input.path, clip, isStill: clip.type === 'image' };
+}
+
+/**
+ * Whether a rendered file carries sound.
+ *
+ * Mapping `0:a` when there is no audio stream fails the whole command, and a
+ * timeline whose only audio is a music track is an ordinary case.
+ */
+async function hasAudioStream(ffmpeg: FFmpegEngine, path: string): Promise<boolean> {
+	if (!ffmpeg.probe) return true;
+	try {
+		const probe = await ffmpeg.probe(path);
+		return !!probe.audioCodec;
+	} catch {
+		return true;
+	}
+}
+
+/** Length of the base render, so the composite can be capped to it. */
+async function durationOf(ffmpeg: FFmpegEngine, path: string): Promise<number> {
+	if (!ffmpeg.probe) return 0;
+	try {
+		return (await ffmpeg.probe(path)).duration;
+	} catch {
+		return 0;
+	}
 }
 
 // ── Audio-only export ───────────────────────────────────────────────
