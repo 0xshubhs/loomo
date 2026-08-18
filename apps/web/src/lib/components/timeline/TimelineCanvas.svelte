@@ -6,7 +6,19 @@
 	import { calculateZoom } from '$lib/timeline/zoom-controller.js';
 	import { pixelToPlayhead } from '$lib/timeline/playhead-controller.js';
 	import { MoveClipCommand, TrimClipCommand } from '$lib/commands/clip-commands.js';
-	import { AddClipCommand } from '$lib/commands/clip-commands.js';
+	import {
+		AddClipCommand,
+		RemoveClipCommand,
+		SplitClipCommand,
+		DuplicateClipsCommand,
+		RemoveGapsCommand,
+		CloseGapCommand,
+		TrimToPlayheadCommand,
+	} from '$lib/commands/clip-commands.js';
+	import { DetachAudioCommand } from '$lib/commands/audio-commands.js';
+	import { gapAt, clipAt } from '$lib/timeline/gaps.js';
+	import ContextMenu, { type MenuEntry } from '../shared/ContextMenu.svelte';
+	import { formatDuration } from '$lib/utils/time.js';
 	import { getTrackIndexFromY } from '$lib/timeline/timeline-engine.js';
 	import { generateId } from '$lib/utils/id.js';
 	import type { Clip } from '$lib/types/index.js';
@@ -18,6 +30,8 @@
 	const selection = getSelection();
 	const commands = getCommands();
 	const mediaLibrary = getMediaLibrary();
+
+	let contextMenu = $state<{ x: number; y: number; items: MenuEntry[] } | null>(null);
 
 	let canvasEl: HTMLCanvasElement;
 	let renderer: TimelineRenderer;
@@ -204,6 +218,110 @@
 		updateRenderer();
 	}
 
+	/**
+	 * Builds the right-click menu for whatever is under the cursor: a clip, a
+	 * gap between clips, or empty track space.
+	 */
+	function onContextMenu(e: MouseEvent) {
+		e.preventDefault();
+		const rect = canvasEl.getBoundingClientRect();
+		const x = e.clientX - rect.left;
+		const y = e.clientY - rect.top;
+
+		const time = Math.max(0, (x + ui.timelineScrollX) / ui.pixelsPerSecond);
+		const trackIndex = getTrackIndexFromY(
+			y, renderer.trackHeight, renderer.trackGap, renderer.rulerHeight,
+			ui.timelineScrollY, timeline.tracks.length
+		);
+		const track = timeline.tracks[trackIndex];
+		const items: MenuEntry[] = [];
+
+		if (track) {
+			const clip = clipAt(track, time);
+			const gap = gapAt(track, time);
+
+			if (clip) {
+				selection.selectClip(clip.id, false);
+				const playhead = playback.currentTime;
+				const insideClip =
+					playhead > clip.timelineStart + 0.01 &&
+					playhead < clip.timelineStart + clip.duration - 0.01;
+
+				items.push(
+					{
+						label: 'Split at playhead',
+						shortcut: 'S',
+						disabled: !insideClip,
+						action: () => commands.execute(new SplitClipCommand(timeline, clip.id, playhead)),
+					},
+					{
+						label: 'Trim start to playhead',
+						disabled: !insideClip,
+						action: () =>
+							commands.execute(new TrimToPlayheadCommand(timeline, clip.id, 'start', playhead)),
+					},
+					{
+						label: 'Trim end to playhead',
+						disabled: !insideClip,
+						action: () =>
+							commands.execute(new TrimToPlayheadCommand(timeline, clip.id, 'end', playhead)),
+					},
+					'separator',
+					{
+						label: 'Duplicate',
+						shortcut: 'Ctrl+D',
+						action: () => commands.execute(new DuplicateClipsCommand(timeline, [clip.id])),
+					},
+				);
+
+				if (clip.type === 'video') {
+					items.push({
+						label: 'Detach audio',
+						action: () => commands.execute(new DetachAudioCommand(timeline, clip.id)),
+					});
+				}
+
+				items.push('separator', {
+					label: 'Delete clip',
+					shortcut: 'Del',
+					danger: true,
+					action: () => commands.execute(new RemoveClipCommand(timeline, clip.id)),
+				});
+			} else if (gap) {
+				items.push(
+					{
+						label: `Close this gap (${formatDuration(gap.end - gap.start)})`,
+						action: () =>
+							commands.execute(new CloseGapCommand(timeline, track.id, gap.start, gap.end)),
+					},
+					{
+						label: 'Close all gaps on this track',
+						action: () => commands.execute(new RemoveGapsCommand(timeline, track.id)),
+					},
+					{
+						label: 'Close all gaps',
+						shortcut: 'G',
+						action: () => commands.execute(new RemoveGapsCommand(timeline)),
+					}
+				);
+			} else {
+				items.push({
+					label: 'Close all gaps',
+					shortcut: 'G',
+					action: () => commands.execute(new RemoveGapsCommand(timeline)),
+				});
+			}
+		} else {
+			items.push(
+				{ label: 'Add video track', action: () => timeline.addTrack('video') },
+				{ label: 'Add audio track', action: () => timeline.addTrack('audio') }
+			);
+		}
+
+		contextMenu = { x: e.clientX, y: e.clientY, items };
+		updateRenderer();
+	}
+
 	function onDragOver(e: DragEvent) {
 		e.preventDefault();
 		if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
@@ -219,8 +337,18 @@
 	onwheel={onWheel}
 	ondrop={onDrop}
 	ondragover={onDragOver}
+	oncontextmenu={onContextMenu}
 	class="timeline-canvas"
 ></canvas>
+
+{#if contextMenu}
+	<ContextMenu
+		x={contextMenu.x}
+		y={contextMenu.y}
+		items={contextMenu.items}
+		onclose={() => (contextMenu = null)}
+	/>
+{/if}
 
 <style>
 	.timeline-canvas {

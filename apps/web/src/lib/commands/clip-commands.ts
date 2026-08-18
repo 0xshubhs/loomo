@@ -679,3 +679,113 @@ export class RemoveSilencesCommand implements Command {
 		this.timeline.tracks = [...this.timeline.tracks];
 	}
 }
+
+/**
+ * Closes one gap by sliding everything after it left.
+ *
+ * `RemoveGapsCommand` collapses every gap on the timeline at once, which is
+ * the wrong tool when a user right-clicks one specific piece of empty space:
+ * it silently rearranges parts of the edit they never touched.
+ */
+export class CloseGapCommand implements Command {
+	readonly type = 'close-gap';
+	readonly description = 'Close gap';
+
+	private previousStarts = new Map<string, number>();
+
+	constructor(
+		private timeline: TimelineStore,
+		private trackId: string,
+		private gapStart: number,
+		private gapEnd: number
+	) {}
+
+	execute(): void {
+		const track = this.timeline.getTrackById(this.trackId);
+		if (!track) throw new Error(`Track ${this.trackId} not found`);
+
+		const shift = this.gapEnd - this.gapStart;
+		if (shift <= 0) return;
+
+		this.previousStarts.clear();
+		for (const clip of track.clips) {
+			// Everything starting at or after the gap moves back by its width.
+			if (clip.timelineStart >= this.gapEnd - 0.0001) {
+				this.previousStarts.set(clip.id, clip.timelineStart);
+				clip.timelineStart = Math.max(0, clip.timelineStart - shift);
+			}
+		}
+		this.timeline.tracks = [...this.timeline.tracks];
+	}
+
+	undo(): void {
+		const track = this.timeline.getTrackById(this.trackId);
+		if (!track) return;
+		for (const clip of track.clips) {
+			const previous = this.previousStarts.get(clip.id);
+			if (previous !== undefined) clip.timelineStart = previous;
+		}
+		this.timeline.tracks = [...this.timeline.tracks];
+	}
+}
+
+/**
+ * Trims a clip up to the playhead, dropping the part on the chosen side.
+ *
+ * The timeline already supports dragging an edge, but that is invisible to
+ * anyone who does not already know it exists, and it cannot be undone as one
+ * step. This is the same operation as an explicit, discoverable action.
+ */
+export class TrimToPlayheadCommand implements Command {
+	readonly type = 'trim-to-playhead';
+	readonly description: string;
+
+	private previous: { start: number; duration: number; sourceStart: number; sourceEnd: number } | null =
+		null;
+
+	constructor(
+		private timeline: TimelineStore,
+		private clipId: string,
+		private side: 'start' | 'end',
+		private playhead: number
+	) {
+		this.description = side === 'start' ? 'Trim clip start' : 'Trim clip end';
+	}
+
+	execute(): void {
+		const clip = this.timeline.getClipById(this.clipId);
+		if (!clip) throw new Error(`Clip ${this.clipId} not found`);
+
+		const offset = this.playhead - clip.timelineStart;
+		// Refuse a trim that would leave nothing, or that misses the clip.
+		if (offset <= 0.01 || offset >= clip.duration - 0.01) return;
+
+		this.previous = {
+			start: clip.timelineStart,
+			duration: clip.duration,
+			sourceStart: clip.sourceStart,
+			sourceEnd: clip.sourceEnd,
+		};
+
+		if (this.side === 'start') {
+			clip.timelineStart = this.playhead;
+			clip.sourceStart += offset;
+			clip.duration -= offset;
+		} else {
+			clip.sourceEnd = clip.sourceStart + offset;
+			clip.duration = offset;
+		}
+
+		this.timeline.tracks = [...this.timeline.tracks];
+	}
+
+	undo(): void {
+		const clip = this.timeline.getClipById(this.clipId);
+		if (!clip || !this.previous) return;
+		clip.timelineStart = this.previous.start;
+		clip.duration = this.previous.duration;
+		clip.sourceStart = this.previous.sourceStart;
+		clip.sourceEnd = this.previous.sourceEnd;
+		this.timeline.tracks = [...this.timeline.tracks];
+	}
+}
