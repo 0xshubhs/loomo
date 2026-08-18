@@ -1,5 +1,5 @@
 .PHONY: dev dev-web dev-backend dev-infra build build-web build-backend test clean db-migrate db-reset sqlc \
-	desktop-dev desktop-build desktop-deps desktop-icon desktop-setup
+	desktop-dev desktop-build desktop-deb desktop-deps desktop-icon desktop-setup
 
 # ============ Development ============
 dev: dev-infra
@@ -45,6 +45,11 @@ desktop-dev: desktop-deps
 
 desktop-build: desktop-deps
 	bun run --cwd apps/desktop build
+
+# Just the .deb. "targets": "all" also produces rpm and AppImage, which adds
+# minutes to every rebuild and is only wanted for a release.
+desktop-deb: desktop-deps
+	bun run --cwd apps/desktop build:deb
 
 # ============ Database ============
 db-migrate:
