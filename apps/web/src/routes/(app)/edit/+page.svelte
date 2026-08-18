@@ -96,7 +96,7 @@
 
 	async function handleExport(config: ExportConfig) {
 		try {
-			const blob = await exportTimeline(
+			const result = await exportTimeline(
 				ffmpeg,
 				timeline.tracks,
 				timeline.transitions,
@@ -106,7 +106,9 @@
 				(assetId) => {
 					const asset = mediaLibrary.getAssetById(assetId);
 					if (!asset) return undefined;
-					return { file: asset.file, name: asset.name };
+					// scratchName lets the export reuse the copy import already
+					// staged, instead of pushing the file through memory again.
+					return { file: asset.file, name: asset.name, scratchName: asset.scratchName };
 				},
 				timeline.shapeOverlays,
 				captions.captionTrack,
@@ -118,13 +120,30 @@
 			// browser download. Dropping the file into ~/Downloads unannounced
 			// is not a reasonable end to a render that took minutes.
 			const suggested = `loomo-export.${config.format}`;
-			const saved = await saveOutput({ suggestedName: suggested, blob });
+			try {
+				const saved = await saveOutput({
+					suggestedName: suggested,
+					// On the desktop the render is already a file; only its name
+					// travels, and the copy happens natively.
+					scratchName: result.scratchName ?? undefined,
+					blob: result.blob ?? undefined,
+				});
 
-			ui.showExportDialog = false;
-			exportProgress = null;
-			if (saved.saved && saved.path) {
-				importStatus = `Saved to ${saved.path}`;
-				setTimeout(() => { importStatus = null; }, 8000);
+				ui.showExportDialog = false;
+				exportProgress = null;
+				if (saved.saved && saved.path) {
+					importStatus = `Saved to ${saved.path}`;
+					setTimeout(() => { importStatus = null; }, 8000);
+				} else if (!saved.saved) {
+					importStatus = 'Export discarded — no location chosen';
+					setTimeout(() => { importStatus = null; }, 6000);
+				}
+			} finally {
+				// The render is left on disk until it has been saved, so it has
+				// to be cleaned up here whether or not the user kept it.
+				if (result.scratchName) {
+					try { await ffmpeg.deleteFile(result.scratchName); } catch {}
+				}
 			}
 		} catch (err) {
 			console.error('Export failed:', err);

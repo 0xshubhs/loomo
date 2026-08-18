@@ -33,6 +33,30 @@ import {
 } from './keyframe-graph.js';
 
 /**
+ * Looks up the bytes behind a clip.
+ *
+ * `scratchName` is the file's name in the native scratch directory when import
+ * staged it there; the export reuses that staging instead of copying the file
+ * through memory a second time.
+ */
+export type AssetResolver = (
+	assetId: string
+) => { file: File; name: string; scratchName?: string } | undefined;
+
+/**
+ * Where the finished render ended up.
+ *
+ * Exactly one of `blob` and `scratchName` is set. The desktop leaves the file
+ * on disk and passes its name, so hundreds of megabytes never cross into
+ * JavaScript; the web build has nowhere to leave it and hands back bytes.
+ */
+export interface ExportResult {
+	blob: Blob | null;
+	scratchName: string | null;
+	size: number;
+}
+
+/**
  * Export the timeline to a video file.
  *
  * Strategies:
@@ -48,11 +72,11 @@ export async function exportTimeline(
 	textOverlays: TextOverlay[],
 	config: ExportConfig,
 	onProgress: (progress: ExportProgress) => void,
-	getAssetFile: (assetId: string) => { file: File; name: string } | undefined,
+	getAssetFile: AssetResolver,
 	shapeOverlays: ShapeOverlay[] = [],
 	captionTrack?: CaptionTrack,
 	annotations: Annotation[] = []
-): Promise<Blob> {
+): Promise<ExportResult> {
 	const startTime = Date.now();
 
 	const progress = (stage: ExportProgress['stage'], p: number) => {
@@ -116,22 +140,22 @@ export async function exportTimeline(
 		}
 	}
 
-	let blob: Blob;
+	let result: ExportResult;
 
 	if (hasEffects) {
 		// Strategy C: filter_complex — text overlays or transitions need all clips
-		blob = await exportFilterComplex(
+		result = await exportFilterComplex(
 			ffmpeg, sortedClips, textOverlays, shapeOverlays, config, targetWidth, targetHeight, outputFile, getAssetFile, progress, captionTrack, annotations
 		);
 	} else if (!needsScale && sortedClips.length === 1) {
 		// Strategy A: Single clip, source resolution — stream copy
-		blob = await exportSingleClipStreamCopy(ffmpeg, sortedClips[0], config, outputFile, getAssetFile, progress);
+		result = await exportSingleClipStreamCopy(ffmpeg, sortedClips[0], config, outputFile, getAssetFile, progress);
 	} else if (!needsScale) {
 		// Strategy A: Multi-clip, source resolution — stream copy concat
-		blob = await exportConcatStreamCopy(ffmpeg, sortedClips, config, outputFile, getAssetFile, progress);
+		result = await exportConcatStreamCopy(ffmpeg, sortedClips, config, outputFile, getAssetFile, progress);
 	} else {
 		// Strategy B: Resolution change (4K, downscale, etc.) — re-encode per-clip + concat
-		blob = await exportReencodeConcat(
+		result = await exportReencodeConcat(
 			ffmpeg, sortedClips, config, targetWidth, targetHeight, outputFile, getAssetFile, progress
 		);
 	}
@@ -143,10 +167,10 @@ export async function exportTimeline(
 		totalFrames: 0,
 		elapsed: Date.now() - startTime,
 		eta: 0,
-		outputSize: blob.size,
+		outputSize: result.size,
 	});
 
-	return blob;
+	return result;
 }
 
 // ── Probe source resolution (no WASM needed) ───────────────────────
@@ -196,19 +220,16 @@ async function exportSingleClipStreamCopy(
 	clip: Clip,
 	config: ExportConfig,
 	outputFile: string,
-	getAssetFile: (id: string) => { file: File; name: string } | undefined,
+	getAssetFile: AssetResolver,
 	progress: (stage: ExportProgress['stage'], p: number) => void
-): Promise<Blob> {
+): Promise<ExportResult> {
 	const asset = getAssetFile(clip.assetId);
 	if (!asset) throw new Error(`Asset not found for clip "${clip.name}"`);
 
-	validateFileSize(asset.file.size);
-
-	const ext = getExt(asset.name);
-	const inputPath = `input.${ext}`;
-
 	progress('preparing', 0.1);
-	await writeAssetFile(ffmpeg, inputPath, asset.file);
+	const input = await prepareInput(ffmpeg, asset, `input.${getExt(asset.name)}`);
+	const inputPath = input.path;
+	const temps = input.disposable ? [inputPath] : [];
 
 	progress('rendering', 0.3);
 
@@ -225,14 +246,15 @@ async function exportSingleClipStreamCopy(
 
 	const exitCode = await ffmpeg.exec(args);
 	if (exitCode !== 0) {
-		await cleanup(ffmpeg, [inputPath, outputFile]);
+		await cleanup(ffmpeg, [...temps, outputFile]);
 		throw new Error(`FFmpeg exited with code ${exitCode}`);
 	}
 
 	progress('finalizing', 0.9);
-	const blob = await readOutputBlob(ffmpeg, outputFile, config.format);
-	await cleanup(ffmpeg, [inputPath, outputFile]);
-	return blob;
+	const result = await finishOutput(ffmpeg, outputFile, config.format);
+	await cleanup(ffmpeg, temps);
+	if (!result.scratchName) await cleanup(ffmpeg, [outputFile]);
+	return result;
 }
 
 // ── Strategy A2: Multi-clip concat with stream copy ─────────────────
@@ -242,9 +264,9 @@ async function exportConcatStreamCopy(
 	sortedClips: Clip[],
 	config: ExportConfig,
 	outputFile: string,
-	getAssetFile: (id: string) => { file: File; name: string } | undefined,
+	getAssetFile: AssetResolver,
 	progress: (stage: ExportProgress['stage'], p: number) => void
-): Promise<Blob> {
+): Promise<ExportResult> {
 	const trimmedFiles: string[] = [];
 	const total = sortedClips.length;
 
@@ -253,15 +275,12 @@ async function exportConcatStreamCopy(
 		const asset = getAssetFile(clip.assetId);
 		if (!asset) throw new Error(`Asset not found for clip "${clip.name}"`);
 
-		validateFileSize(asset.file.size);
-
-		const ext = getExt(asset.name);
-		const inputPath = `src_${i}.${ext}`;
 		const trimmedPath = `trimmed_${i}.mp4`;
 
 		progress('preparing', (i / total) * 0.4);
 
-		await writeAssetFile(ffmpeg, inputPath, asset.file);
+		const input = await prepareInput(ffmpeg, asset, `src_${i}.${getExt(asset.name)}`);
+		const inputPath = input.path;
 
 		const args: string[] = [];
 		if (clip.sourceStart > 0.01) {
@@ -276,11 +295,18 @@ async function exportConcatStreamCopy(
 
 		const exitCode = await ffmpeg.exec(args);
 		if (exitCode !== 0) {
-			await cleanup(ffmpeg, [inputPath, trimmedPath, ...trimmedFiles, outputFile]);
+			await cleanup(ffmpeg, [
+				...(input.disposable ? [inputPath] : []),
+				trimmedPath, ...trimmedFiles, outputFile,
+			]);
 			throw new Error(`FFmpeg trim failed for clip ${i + 1} (exit code ${exitCode})`);
 		}
 
-		try { await ffmpeg.deleteFile(inputPath); } catch {}
+		// Only drop the input when this export created it; a staged source is
+		// still backing the preview.
+		if (input.disposable) {
+			try { await ffmpeg.deleteFile(inputPath); } catch {}
+		}
 		trimmedFiles.push(trimmedPath);
 	}
 
@@ -305,9 +331,10 @@ async function exportConcatStreamCopy(
 	}
 
 	progress('finalizing', 0.9);
-	const blob = await readOutputBlob(ffmpeg, outputFile, config.format);
-	await cleanup(ffmpeg, [...trimmedFiles, listPath, outputFile]);
-	return blob;
+	const result = await finishOutput(ffmpeg, outputFile, config.format);
+	await cleanup(ffmpeg, [...trimmedFiles, listPath]);
+	if (!result.scratchName) await cleanup(ffmpeg, [outputFile]);
+	return result;
 }
 
 // ── Strategy B: Re-encode per-clip + concat (4K, resolution change) ─
@@ -322,9 +349,9 @@ async function exportReencodeConcat(
 	width: number,
 	height: number,
 	outputFile: string,
-	getAssetFile: (id: string) => { file: File; name: string } | undefined,
+	getAssetFile: AssetResolver,
 	progress: (stage: ExportProgress['stage'], p: number) => void
-): Promise<Blob> {
+): Promise<ExportResult> {
 	const encodedFiles: string[] = [];
 	const total = sortedClips.length;
 
@@ -333,14 +360,11 @@ async function exportReencodeConcat(
 		const asset = getAssetFile(clip.assetId);
 		if (!asset) throw new Error(`Asset not found for clip "${clip.name}"`);
 
-		validateFileSize(asset.file.size);
-
-		const ext = getExt(asset.name);
-		const inputPath = `src_${i}.${ext}`;
 		const encodedPath = `enc_${i}.mp4`;
 
 		progress('preparing', (i / total) * 0.3);
-		await writeAssetFile(ffmpeg, inputPath, asset.file);
+		const input = await prepareInput(ffmpeg, asset, `src_${i}.${getExt(asset.name)}`);
+		const inputPath = input.path;
 
 		progress('encoding', 0.3 + (i / total) * 0.5);
 
@@ -434,21 +458,27 @@ async function exportReencodeConcat(
 		});
 
 		if (exitCode !== 0) {
-			await cleanup(ffmpeg, [inputPath, encodedPath, ...encodedFiles, outputFile]);
+			await cleanup(ffmpeg, [
+				...(input.disposable ? [inputPath] : []),
+				encodedPath, ...encodedFiles, outputFile,
+			]);
 			throw new Error(`FFmpeg re-encode failed for clip ${i + 1} (exit code ${exitCode})`);
 		}
 
-		// Free source file immediately to reclaim WASM memory
-		try { await ffmpeg.deleteFile(inputPath); } catch {}
+		// Free the source immediately to reclaim WASM memory — but only if this
+		// export wrote it. A staged file is shared with the preview.
+		if (input.disposable) {
+			try { await ffmpeg.deleteFile(inputPath); } catch {}
+		}
 		encodedFiles.push(encodedPath);
 	}
 
 	// Single encoded clip — just read it directly
 	if (encodedFiles.length === 1) {
 		progress('finalizing', 0.9);
-		const blob = await readOutputBlob(ffmpeg, encodedFiles[0], config.format);
-		await cleanup(ffmpeg, encodedFiles);
-		return blob;
+		const result = await finishOutput(ffmpeg, encodedFiles[0], config.format);
+		if (!result.scratchName) await cleanup(ffmpeg, encodedFiles);
+		return result;
 	}
 
 	// Multiple encoded clips — concat with stream copy (all same resolution now)
@@ -472,9 +502,10 @@ async function exportReencodeConcat(
 	}
 
 	progress('finalizing', 0.95);
-	const blob = await readOutputBlob(ffmpeg, outputFile, config.format);
-	await cleanup(ffmpeg, [...encodedFiles, listPath, outputFile]);
-	return blob;
+	const result = await finishOutput(ffmpeg, outputFile, config.format);
+	await cleanup(ffmpeg, [...encodedFiles, listPath]);
+	if (!result.scratchName) await cleanup(ffmpeg, [outputFile]);
+	return result;
 }
 
 // ── Strategy C: filter_complex for effects ──────────────────────────
@@ -488,14 +519,16 @@ async function exportFilterComplex(
 	width: number,
 	height: number,
 	outputFile: string,
-	getAssetFile: (id: string) => { file: File; name: string } | undefined,
+	getAssetFile: AssetResolver,
 	progress: (stage: ExportProgress['stage'], p: number) => void,
 	captionTrack?: CaptionTrack,
 	annotations: Annotation[] = []
-): Promise<Blob> {
+): Promise<ExportResult> {
 	// Write all source files (dedup by assetId)
 	const inputPaths: string[] = [];
 	const writtenAssets = new Map<string, string>();
+	// Only paths this export created; staged sources are left alone.
+	const temps: string[] = [];
 
 	for (let i = 0; i < sortedClips.length; i++) {
 		const clip = sortedClips[i];
@@ -508,13 +541,10 @@ async function exportFilterComplex(
 		const asset = getAssetFile(clip.assetId);
 		if (!asset) throw new Error(`Asset not found for clip "${clip.name}"`);
 
-		validateFileSize(asset.file.size);
-
-		const ext = getExt(asset.name);
-		const inputPath = `input_${i}.${ext}`;
-
 		progress('preparing', 0.05 + (i / sortedClips.length) * 0.15);
-		await writeAssetFile(ffmpeg, inputPath, asset.file);
+		const input = await prepareInput(ffmpeg, asset, `input_${i}.${getExt(asset.name)}`);
+		const inputPath = input.path;
+		if (input.disposable) temps.push(inputPath);
 
 		writtenAssets.set(clip.assetId, inputPath);
 		inputPaths.push(inputPath);
@@ -828,16 +858,16 @@ async function exportFilterComplex(
 	});
 
 	if (exitCode !== 0) {
-		const allPaths = [...new Set(inputPaths), outputFile];
-		await cleanup(ffmpeg, allPaths);
+		await cleanup(ffmpeg, [...new Set(temps), outputFile]);
 		throw new Error(`FFmpeg exited with code ${exitCode}. Check browser console for details.`);
 	}
 
 	progress('finalizing', 0.95);
 
-	const blob = await readOutputBlob(ffmpeg, outputFile, config.format);
-	await cleanup(ffmpeg, [...new Set(inputPaths), outputFile]);
-	return blob;
+	const result = await finishOutput(ffmpeg, outputFile, config.format);
+	await cleanup(ffmpeg, [...new Set(temps)]);
+	if (!result.scratchName) await cleanup(ffmpeg, [outputFile]);
+	return result;
 }
 
 // ── FFmpeg filter helpers for clip color correction ─────────────────
@@ -1108,18 +1138,60 @@ function buildFfmpegPositionFilter(clip: Clip, targetWidth: number, targetHeight
 
 // ── Shared helpers ──────────────────────────────────────────────────
 
-/** Max file size FFmpeg.wasm can handle (WASM memory limit ~512MB, need room for processing) */
-const MAX_FILE_SIZE_MB = 300;
+/**
+ * Rejects an input the engine genuinely cannot process.
+ *
+ * The limit belongs to the engine, not to the pipeline. ffmpeg.wasm decodes
+ * inside a bounded heap; the native binary does not, and hard-coding the wasm
+ * ceiling here made the desktop refuse a 474MB source it could have exported
+ * without trouble.
+ */
+function validateFileSize(ffmpeg: FFmpegEngine, bytes: number): void {
+	const limit = ffmpeg.maxInputBytes;
+	if (limit === null || bytes <= limit) return;
 
-function validateFileSize(bytes: number): void {
-	const mb = bytes / (1024 * 1024);
-	if (mb > MAX_FILE_SIZE_MB) {
-		throw new Error(
-			`File is too large (${Math.round(mb)}MB). ` +
-			`FFmpeg.wasm can handle files up to ~${MAX_FILE_SIZE_MB}MB. ` +
-			`Try trimming the clip shorter before exporting.`
-		);
+	const mb = (n: number) => Math.round(n / (1024 * 1024));
+	throw new Error(
+		`File is too large (${mb(bytes)}MB). ` +
+		`This build processes video in the browser and can handle files up to ` +
+		`~${mb(limit)}MB. Trim the clip shorter, or use the desktop app, which ` +
+		`has no such limit.`
+	);
+}
+
+export interface PreparedInput {
+	/** The virtual filename to hand ffmpeg. */
+	path: string;
+	/** False when the bytes were already on disk and must be left there. */
+	disposable: boolean;
+}
+
+/**
+ * Makes an asset's bytes available to ffmpeg under a virtual filename.
+ *
+ * Import already streams every file into the native scratch directory to feed
+ * the preview, so on the desktop the bytes are on disk before an export
+ * starts. Reusing that staging is not just an optimisation: the fallback path
+ * calls `file.arrayBuffer()`, which materialises the whole source in webview
+ * memory — half a gigabyte for a long 1080p clip, on a heap that has already
+ * been seen to die at that size.
+ */
+async function prepareInput(
+	ffmpeg: FFmpegEngine,
+	asset: { file: File; name: string; scratchName?: string },
+	fallbackPath: string
+): Promise<PreparedInput> {
+	if (asset.scratchName && ffmpeg.fileExists) {
+		// A staged file can go missing — the scratch directory is emptied on
+		// launch — so confirm rather than assume.
+		if (await ffmpeg.fileExists(asset.scratchName)) {
+			return { path: asset.scratchName, disposable: false };
+		}
 	}
+
+	validateFileSize(ffmpeg, asset.file.size);
+	await writeAssetFile(ffmpeg, fallbackPath, asset.file);
+	return { path: fallbackPath, disposable: true };
 }
 
 function getExt(filename: string): string {
@@ -1142,6 +1214,36 @@ const MIME_MAP: Record<string, string> = {
 async function readOutputBlob(ffmpeg: FFmpegEngine, outputFile: string, format: string): Promise<Blob> {
 	const outputData = await ffmpeg.readFile(outputFile);
 	return new Blob([outputData], { type: MIME_MAP[format] ?? 'video/mp4' });
+}
+
+/**
+ * Hands back the finished render in whichever form costs least.
+ *
+ * On an engine with real storage the file stays where ffmpeg wrote it and only
+ * its name travels; the save step copies it natively. Pulling it into a Blob
+ * first would put the entire output — commonly hundreds of megabytes — into
+ * the webview heap, and then `saveOutput` would copy it a second time.
+ */
+async function finishOutput(
+	ffmpeg: FFmpegEngine,
+	outputPath: string,
+	format: string
+): Promise<ExportResult> {
+	if (ffmpeg.persistentStore) {
+		const size = await outputSizeOf(ffmpeg, outputPath);
+		return { blob: null, scratchName: outputPath, size };
+	}
+	const blob = await readOutputBlob(ffmpeg, outputPath, format);
+	return { blob, scratchName: null, size: blob.size };
+}
+
+/** Best-effort size for progress reporting; never worth failing an export over. */
+async function outputSizeOf(ffmpeg: FFmpegEngine, path: string): Promise<number> {
+	try {
+		return (await ffmpeg.fileSize?.(path)) ?? 0;
+	} catch {
+		return 0;
+	}
 }
 
 async function cleanup(ffmpeg: FFmpegEngine, paths: string[]): Promise<void> {

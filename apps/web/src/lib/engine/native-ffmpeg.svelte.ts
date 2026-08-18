@@ -40,6 +40,12 @@ export class NativeFFmpegEngine implements FFmpegEngine {
 	/** ffmpeg's own version banner, shown in the editor status bar. */
 	version = $state<string>('');
 
+	/** The real binary streams from disk; nothing has to fit in a heap. */
+	readonly maxInputBytes = null;
+
+	/** The scratch directory is a real directory. */
+	readonly persistentStore = true;
+
 	#opCounter = 0;
 	#inFlight = new Set<string>();
 
@@ -112,6 +118,19 @@ export class NativeFFmpegEngine implements FFmpegEngine {
 
 	async readFile(path: string): Promise<ArrayBuffer> {
 		return await invoke<ArrayBuffer>('scratch_read', { path });
+	}
+
+	async fileSize(path: string): Promise<number> {
+		try {
+			return await invoke<number>('scratch_size', { path });
+		} catch {
+			return 0;
+		}
+	}
+
+	/** A missing file reports 0 bytes, which is the check we want. */
+	async fileExists(path: string): Promise<boolean> {
+		return (await this.fileSize(path)) > 0;
 	}
 
 	async deleteFile(path: string): Promise<void> {

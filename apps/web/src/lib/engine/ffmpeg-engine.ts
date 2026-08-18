@@ -23,6 +23,25 @@ export interface FFmpegEngine {
 	readonly currentOperation: string | null;
 	readonly initProgress: string;
 
+	/**
+	 * Largest input this engine can accept, or `null` when it has no such
+	 * limit. Only ffmpeg.wasm does — it decodes inside a bounded wasm heap.
+	 * The native binary reads straight off disk, so applying the wasm ceiling
+	 * to it rejects perfectly ordinary files: a 474MB source failed to export
+	 * on the desktop for exactly this reason.
+	 */
+	readonly maxInputBytes: number | null;
+
+	/**
+	 * Whether files written here survive on real storage the OS can reach.
+	 *
+	 * When true, a finished render never has to enter JavaScript: it is already
+	 * a file, and saving it is a copy. Reading a half-gigabyte output back into
+	 * an ArrayBuffer only to write it out again is how the webview ran out of
+	 * memory on large exports.
+	 */
+	readonly persistentStore: boolean;
+
 	initialize(): Promise<void>;
 	/** Resolves with the process exit code; rejects when ffmpeg itself errors. */
 	exec(args: string[], callbacks?: OperationCallback): Promise<number>;
@@ -38,6 +57,14 @@ export interface FFmpegEngine {
 	): Promise<void>;
 	readFile(path: string): Promise<ArrayBuffer>;
 	deleteFile(path: string): Promise<void>;
+	/**
+	 * Whether a virtual filename currently holds bytes. Lets callers reuse a
+	 * file staged earlier instead of writing it again; engines without a
+	 * persistent store simply omit this.
+	 */
+	fileExists?(path: string): Promise<boolean>;
+	/** Byte length of a stored file, for reporting an output's size. */
+	fileSize?(path: string): Promise<number>;
 	terminate(): void;
 }
 

@@ -9,6 +9,15 @@ interface PendingOp {
 
 /** ffmpeg.wasm in a Web Worker — the engine used on the web. */
 export class FFmpegBridge implements FFmpegEngine {
+	/**
+	 * ffmpeg.wasm decodes inside a ~512MB wasm heap and needs room to work, so
+	 * inputs beyond roughly 300MB cannot be processed.
+	 */
+	readonly maxInputBytes = 300 * 1024 * 1024;
+
+	/** MEMFS lives inside the worker's heap and is gone when it terminates. */
+	readonly persistentStore = false;
+
 	private worker: Worker | null = null;
 	private pendingOps = new Map<string, PendingOp>();
 	private opCounter = 0;

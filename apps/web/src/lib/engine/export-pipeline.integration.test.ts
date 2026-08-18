@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync, rmSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { exportTimeline } from './export-pipeline.js';
@@ -45,6 +45,10 @@ class NodeFFmpegEngine implements FFmpegEngine {
 	busy = false;
 	currentOperation: string | null = null;
 	initProgress = 'Ready';
+	/** Mirrors the native engine: a real binary has no input-size ceiling. */
+	readonly maxInputBytes = null;
+	/** And, like the desktop, it writes to a real directory. */
+	readonly persistentStore = true;
 
 	constructor(private dir: string) {}
 
@@ -73,6 +77,18 @@ class NodeFFmpegEngine implements FFmpegEngine {
 	async readFile(name: string): Promise<ArrayBuffer> {
 		const buffer = readFileSync(path.join(this.dir, name));
 		return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer;
+	}
+
+	async fileSize(name: string): Promise<number> {
+		try {
+			return statSync(path.join(this.dir, name)).size;
+		} catch {
+			return 0;
+		}
+	}
+
+	async fileExists(name: string): Promise<boolean> {
+		return (await this.fileSize(name)) > 0;
 	}
 
 	async deleteFile(name: string): Promise<void> {
@@ -141,9 +157,9 @@ function keyframeTrack(property: KeyframeTrack['property'], values: [number, num
 	};
 }
 
-async function runExport(clips: Clip[]): Promise<Blob> {
+async function runExport(clips: Clip[]): Promise<Uint8Array> {
 	const engine = new NodeFFmpegEngine(workDir);
-	return await exportTimeline(
+	const result = await exportTimeline(
 		engine,
 		videoTrack(clips),
 		[],
@@ -152,10 +168,15 @@ async function runExport(clips: Clip[]): Promise<Blob> {
 		() => {},
 		() => ({ file: sourceFile, name: 'source.mp4' })
 	);
+
+	// This engine keeps files on disk, so the export hands back a name rather
+	// than bytes — exactly as the desktop does.
+	expect(result.scratchName).toBeTruthy();
+	return new Uint8Array(readFileSync(path.join(workDir, result.scratchName!)));
 }
 
 /** Confirms the exported bytes are a real, decodable video. */
-function probe(blob: Blob, bytes: Uint8Array): { duration: number; width: number; height: number } {
+function probe(bytes: Uint8Array): { duration: number; width: number; height: number } {
 	const probePath = path.join(workDir, `probe-${Math.round(bytes.byteLength)}.mp4`);
 	writeFileSync(probePath, bytes);
 	const output = execFileSync(
@@ -178,10 +199,9 @@ function probe(blob: Blob, bytes: Uint8Array): { duration: number; width: number
 }
 
 async function exportAndProbe(clips: Clip[]) {
-	const blob = await runExport(clips);
-	const bytes = new Uint8Array(await blob.arrayBuffer());
+	const bytes = await runExport(clips);
 	expect(bytes.byteLength).toBeGreaterThan(1000);
-	return probe(blob, bytes);
+	return probe(bytes);
 }
 
 describe.skipIf(!ffmpegBin || !ffprobeBin)('export pipeline end to end', () => {
