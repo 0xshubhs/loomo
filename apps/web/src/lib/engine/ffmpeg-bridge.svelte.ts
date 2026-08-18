@@ -1,3 +1,4 @@
+import { describeFfmpegOperation } from './operation-label.js';
 import type { FFmpegEngine, OperationCallback } from './ffmpeg-engine.js';
 
 interface PendingOp {
@@ -90,7 +91,7 @@ export class FFmpegBridge implements FFmpegEngine {
 		if (!this.worker) throw new Error('FFmpeg not initialized');
 		const id = this.nextId();
 		this.busy = true;
-		this.currentOperation = args.join(' ').slice(0, 100);
+		this.currentOperation = describeFfmpegOperation(args);
 
 		return new Promise<number>((resolve, reject) => {
 			this.pendingOps.set(id, { resolve, reject, callbacks });

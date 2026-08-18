@@ -1,5 +1,6 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { writeInChunks, streamFileInChunks, type ChunkSink } from './chunked-write.js';
+import { describeFfmpegOperation } from './operation-label.js';
 import type { FFmpegEngine, OperationCallback } from './ffmpeg-engine.js';
 
 type ExecEvent =
@@ -58,7 +59,7 @@ export class NativeFFmpegEngine implements FFmpegEngine {
 	async exec(args: string[], callbacks: OperationCallback = {}): Promise<number> {
 		const id = `op-${++this.#opCounter}`;
 		this.busy = true;
-		this.currentOperation = args.join(' ').slice(0, 100);
+		this.currentOperation = describeFfmpegOperation(args);
 		this.#inFlight.add(id);
 
 		const channel = new Channel<ExecEvent>();

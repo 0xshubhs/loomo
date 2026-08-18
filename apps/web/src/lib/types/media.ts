@@ -45,6 +45,13 @@ export interface MediaAsset {
 	addedAt: number;
 	/** Present only on assets pulled from a stock provider. */
 	attribution?: AssetAttribution;
+	/**
+	 * Filename of this asset's copy in the desktop scratch directory, set at
+	 * import. Lets the bundled ffmpeg decode preview frames straight from
+	 * disk — the webview's own video pipeline is not reliable enough to
+	 * preview through on Linux.
+	 */
+	scratchName?: string;
 }
 
 export interface ImportProgress {

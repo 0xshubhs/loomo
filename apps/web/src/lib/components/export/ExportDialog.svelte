@@ -26,10 +26,18 @@
 
 	interface Props {
 		ffmpegReady?: boolean;
+		/**
+		 * Live export progress, owned by the page that runs the export.
+		 *
+		 * This used to be local state here that nothing ever assigned, so the
+		 * progress bar could never render: an export showed no feedback at all
+		 * and simply looked hung — badly so on a 4K render, which takes minutes.
+		 */
+		progress?: ExportProgress | null;
 		onexport?: (config: ExportConfig) => void;
 	}
 
-	let { ffmpegReady = false, onexport }: Props = $props();
+	let { ffmpegReady = false, progress = null, onexport }: Props = $props();
 
 	let format = $state<ExportFormat>('mp4');
 	let resolution = $state<Resolution>('1080p');
@@ -38,7 +46,6 @@
 	let audioBitrate = $state(192);
 	let quality = $state(23);
 	let exporting = $state(false);
-	let exportProgress = $state<ExportProgress | null>(null);
 
 	let exportDimensions = $derived(scaleToResolution(project.aspectRatio.label, resolution as '4k' | '1080p' | '720p' | '480p'));
 
@@ -66,6 +73,14 @@
 		}
 	}
 
+	// Release the dialog when the run ends, so a failed export can be retried
+	// or dismissed instead of trapping the user behind a modal that never closes.
+	$effect(() => {
+		if (progress?.stage === 'done' || progress?.stage === 'error') {
+			exporting = false;
+		}
+	});
+
 	let isGif = $derived(format === 'gif');
 	let isAudioOnly = $derived(format === 'm4a');
 	let gifWarning = $derived(isGif && timeline.totalDuration > 15 ? 'GIF recommended for clips under 15 seconds' : '');
@@ -90,8 +105,11 @@
 </script>
 
 <Modal bind:open={ui.showExportDialog} title="Export" onclose={handleClose}>
-	{#if exporting && exportProgress}
-		<ExportProgressBar progress={exportProgress} />
+	{#if exporting}
+		<ExportProgressBar progress={progress ?? {
+			stage: 'preparing', progress: 0, currentFrame: 0,
+			totalFrames: 0, elapsed: 0, eta: 0, outputSize: 0,
+		}} />
 	{:else}
 		<div class="export-form">
 			<Dropdown label="Format" value={format} options={formatOptions} onchange={(v) => format = v as ExportFormat} />

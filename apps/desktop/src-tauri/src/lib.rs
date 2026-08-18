@@ -1,5 +1,6 @@
 mod capture;
 mod ffmpeg;
+mod preview;
 mod projects;
 mod scratch;
 
@@ -33,6 +34,7 @@ pub fn run() {
             app.manage(projects::Library::initialize(handle)?);
             app.manage(ffmpeg::FfmpegState::default());
             app.manage(capture::CaptureState::default());
+            app.manage(preview::PreviewState::default());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -42,6 +44,7 @@ pub fn run() {
                 let app = window.app_handle();
                 ffmpeg::kill_all(&app.state::<ffmpeg::FfmpegState>());
                 capture::abort(&app.state::<capture::CaptureState>());
+                preview::kill_all(&app.state::<preview::PreviewState>());
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -62,6 +65,9 @@ pub fn run() {
             capture::capture_stop,
             capture::capture_status,
             capture::capture_sources,
+            preview::preview_frame,
+            preview::preview_start,
+            preview::preview_stop,
             projects::projects_list,
             projects::projects_load,
             projects::projects_save,
@@ -76,6 +82,7 @@ pub fn run() {
             if let RunEvent::ExitRequested { .. } = event {
                 ffmpeg::kill_all(&app.state::<ffmpeg::FfmpegState>());
                 capture::abort(&app.state::<capture::CaptureState>());
+                preview::kill_all(&app.state::<preview::PreviewState>());
             }
         });
 }

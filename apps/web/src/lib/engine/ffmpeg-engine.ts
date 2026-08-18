@@ -46,5 +46,12 @@ export interface FFmpegEngine {
  * keep doing `const ffmpeg = createFFmpegEngine()` at the top level.
  */
 export function createFFmpegEngine(): FFmpegEngine {
-	return isDesktop() ? new NativeFFmpegEngine() : new FFmpegBridge();
+	const desktop = isDesktop();
+	const engine: FFmpegEngine = desktop ? new NativeFFmpegEngine() : new FFmpegBridge();
+	// Which engine is in play decides whether the native preview can arm at
+	// all, so it is worth stating outright rather than inferring later.
+	console.info(
+		`[engine] ${desktop ? 'native ffmpeg' : 'ffmpeg.wasm'}; streaming=${!!engine.writeFileStreaming}`
+	);
+	return engine;
 }

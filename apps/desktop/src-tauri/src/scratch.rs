@@ -80,8 +80,28 @@ pub fn scratch_write(request: Request<'_>, scratch: State<'_, Scratch>) -> Resul
         .to_string();
     let append = header(&request, "x-loomo-append") == Some("1");
 
-    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
-        return Err("scratch_write: expected a raw body".into());
+    // Accept either encoding. Tauri normally delivers a Uint8Array as a raw
+    // body, but depending on the IPC transport it can arrive as a JSON array
+    // of byte values instead. Rejecting that form made the write fail in a way
+    // the caller only saw as a silently missing file.
+    let owned: Vec<u8>;
+    let bytes: &[u8] = match request.body() {
+        tauri::ipc::InvokeBody::Raw(raw) => raw,
+        tauri::ipc::InvokeBody::Json(value) => {
+            let array = value
+                .as_array()
+                .ok_or("scratch_write: body is neither raw bytes nor a byte array")?;
+            owned = array
+                .iter()
+                .map(|v| {
+                    v.as_u64()
+                        .filter(|n| *n <= 255)
+                        .map(|n| n as u8)
+                        .ok_or("scratch_write: byte array contains a non-byte value")
+                })
+                .collect::<Result<Vec<u8>, _>>()?;
+            &owned
+        }
     };
 
     let target = scratch.resolve(&virtual_path)?;

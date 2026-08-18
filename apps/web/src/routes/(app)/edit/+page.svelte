@@ -276,7 +276,7 @@
 
 	{#if ffmpeg.busy}
 		<div class="notification info">
-			<span>FFmpeg: {ffmpeg.currentOperation ?? 'Processing...'}</span>
+			<span>{ffmpeg.currentOperation ?? 'Processing…'}</span>
 		</div>
 	{/if}
 
@@ -290,7 +290,7 @@
 		{/snippet}
 
 		{#snippet preview()}
-			<PreviewPanel />
+			<PreviewPanel {ffmpeg} />
 		{/snippet}
 
 		{#snippet timeline()}
@@ -306,7 +306,7 @@
 		{/snippet}
 
 		{#snippet exportDialog()}
-			<ExportDialog ffmpegReady={ffmpeg.ready} onexport={handleExport} />
+			<ExportDialog ffmpegReady={ffmpeg.ready} progress={exportProgress} onexport={handleExport} />
 		{/snippet}
 	</EditorLayout>
 

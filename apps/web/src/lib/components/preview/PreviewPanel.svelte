@@ -9,8 +9,19 @@
 	import { buildKeyframeCss } from '$lib/utils/keyframe-css.js';
 	import { DEFAULT_CLIP_POSITION } from '$lib/types/timeline.js';
 	import { getUI } from '$lib/state/context.js';
+	import { isDesktop } from '$lib/desktop/env.js';
+	import type { FFmpegEngine } from '$lib/engine/ffmpeg-engine.js';
+	import { loadClipAudio, NativeAudioPlayer } from '$lib/engine/native-audio.js';
+	import { NativePreviewStream, nativeFrameAt } from '$lib/engine/native-preview.js';
 	import TransportControls from './TransportControls.svelte';
 	import type { Clip } from '$lib/types/index.js';
+
+	interface Props {
+		/** Needed to extract preview audio with the bundled ffmpeg. */
+		ffmpeg?: FFmpegEngine;
+	}
+
+	let { ffmpeg }: Props = $props();
 
 	const playback = getPlayback();
 	const timeline = getTimeline();
@@ -32,6 +43,93 @@
 	let activeClipId: string | null = null;
 	let chromaKeyActive = false;
 
+	// Native preview: frames decoded by the bundled ffmpeg, painted here.
+	// Active whenever the clip's asset has a scratch copy on the desktop —
+	// the webview's own video path stays out of the picture entirely.
+	const nativeStream = new NativePreviewStream();
+	const nativeAudio = new NativeAudioPlayer();
+	let nativeAudioActive = false;
+	let nativeActive = false;
+	let lastNativeBitmap: ImageBitmap | null = null;
+	let nativeScrubToken = 0;
+
+	function nativeScratchName(clip: Clip): string | null {
+		if (!isDesktop()) return null;
+		const asset = mediaLibrary.getAssetById(clip.assetId);
+		return asset?.scratchName ?? null;
+	}
+
+	async function startNative(clip: Clip): Promise<void> {
+		const name = nativeScratchName(clip);
+		if (!name || clip.reversed) {
+			await stopNative();
+			return;
+		}
+		nativeActive = true;
+		const sourceTime = getSourceTime(clip, playback.currentTime);
+		const width = Math.min(1280, Math.max(320, chromaCanvas?.width || 960));
+		await nativeStream.start(name, sourceTime, 30, width).catch(() => {
+			nativeActive = false;
+		});
+	}
+
+	/**
+	 * Starts preview audio from ffmpeg-extracted PCM.
+	 *
+	 * The media element is muted whenever this succeeds: it is the same element
+	 * that wedges at readyState 0 on this hardware, so nothing is left
+	 * depending on it.
+	 */
+	async function startNativeAudio(clip: Clip): Promise<void> {
+		nativeAudio.stop();
+		nativeAudioActive = false;
+		if (!ffmpeg || clip.reversed) return;
+
+		const name = nativeScratchName(clip);
+		const asset = mediaLibrary.getAssetById(clip.assetId);
+		if (!name || !asset) return;
+
+		const buffer = await loadClipAudio(ffmpeg, asset.id, name);
+		if (!buffer) return;
+		// The clip may have moved on while the extraction ran.
+		if (!playback.playing || findActiveClip()?.id !== clip.id) return;
+
+		if (videoEl) videoEl.muted = true;
+		nativeAudioActive = true;
+		nativeAudio.start(
+			buffer,
+			getSourceTime(clip, playback.currentTime),
+			clip.speed * playback.playbackRate,
+			getClipVolume(clip)
+		);
+	}
+
+	function stopNativeAudio(): void {
+		nativeAudio.stop();
+		nativeAudioActive = false;
+	}
+
+	async function stopNative(): Promise<void> {
+		stopNativeAudio();
+		nativeActive = false;
+		lastNativeBitmap?.close();
+		lastNativeBitmap = null;
+		await nativeStream.stop();
+	}
+
+	/** Paints the newest decoded frame at or before the playback clock. */
+	function paintNative(clip: Clip): void {
+		const target = getSourceTime(clip, playback.currentTime);
+		const frame = nativeStream.takeFrameFor(target);
+		if (frame) {
+			lastNativeBitmap?.close();
+			lastNativeBitmap = frame.bitmap;
+		}
+		if (lastNativeBitmap) {
+			paintSource(lastNativeBitmap, lastNativeBitmap.width, lastNativeBitmap.height, clip);
+		}
+	}
+
 	function toggleFullscreen() {
 		if (!previewContainerEl) return;
 		if (document.fullscreenElement) {
@@ -50,11 +148,31 @@
 	onMount(() => {
 		dpr = window.devicePixelRatio || 1;
 		resizeOverlay();
+		resizeChromaCanvas();
+
+		// The canvas only shows what was last painted, so a seek performed while
+		// paused needs an explicit repaint — otherwise scrubbing leaves a stale
+		// frame on screen even though the video decoded a new one.
+		videoEl?.addEventListener('seeked', processChromaKeyFrame);
+		videoEl?.addEventListener('loadeddata', processChromaKeyFrame);
+
+		const resizeObserver = new ResizeObserver(() => {
+			resizeChromaCanvas();
+			processChromaKeyFrame();
+		});
+		if (viewportEl) resizeObserver.observe(viewportEl);
+
+		return () => {
+			resizeObserver.disconnect();
+			videoEl?.removeEventListener('seeked', processChromaKeyFrame);
+			videoEl?.removeEventListener('loadeddata', processChromaKeyFrame);
+		};
 	});
 
 	onDestroy(() => {
 		stopLoop();
 		videoEl?.pause();
+		void stopNative();
 	});
 
 	// ── Helpers ─────────────────────────────────────────────────────
@@ -126,9 +244,9 @@
 			if (effectCss.filter) {
 				filterStr = filterStr === 'none' ? effectCss.filter : `${filterStr} ${effectCss.filter}`;
 			}
-			if (effectCss.transform) {
-				const existingTransform = videoEl.style.transform || '';
-				videoEl.style.transform = existingTransform ? `${existingTransform} ${effectCss.transform}` : effectCss.transform;
+			if (effectCss.transform && chromaCanvas) {
+				const existingTransform = chromaCanvas.style.transform || '';
+				chromaCanvas.style.transform = existingTransform ? `${existingTransform} ${effectCss.transform}` : effectCss.transform;
 			}
 		}
 
@@ -138,61 +256,94 @@
 		if (keyframeCss.filter) {
 			filterStr = filterStr === 'none' ? keyframeCss.filter : `${filterStr} ${keyframeCss.filter}`;
 		}
-		if (keyframeCss.transform) {
-			const existing = videoEl.style.transform || '';
-			videoEl.style.transform = existing ? `${existing} ${keyframeCss.transform}` : keyframeCss.transform;
+		if (keyframeCss.transform && chromaCanvas) {
+			const existing = chromaCanvas.style.transform || '';
+			chromaCanvas.style.transform = existing ? `${existing} ${keyframeCss.transform}` : keyframeCss.transform;
 		}
-		// Chroma key hides the video element and draws to a canvas instead, so
-		// an animated opacity must not un-hide it.
-		if (keyframeCss.opacity && !chromaKeyActive) {
-			videoEl.style.opacity = keyframeCss.opacity;
+		// Opacity goes on the canvas: the video element is permanently hidden
+		// because the canvas is what the user actually sees.
+		if (keyframeCss.opacity && chromaCanvas) {
+			chromaCanvas.style.opacity = keyframeCss.opacity;
+		} else if (chromaCanvas) {
+			chromaCanvas.style.opacity = '';
 		}
 		if (keyframeCss.volume !== null) {
 			videoEl.volume = Math.min(keyframeCss.volume, 1);
 		}
 
-		videoEl.style.filter = filterStr === 'none' ? '' : filterStr;
+		if (chromaCanvas) chromaCanvas.style.filter = filterStr === 'none' ? '' : filterStr;
 	}
 
+	/**
+	 * The canvas is always the visible surface; the video element only decodes.
+	 *
+	 * Letting the webview composite a <video> is unreliable on Linux: with
+	 * hybrid graphics WebKitGTK's DMABuf renderer paints the video region solid
+	 * black while the rest of the page draws fine, and disabling DMABuf to work
+	 * around it falls back to software compositing that is far too slow to edit
+	 * against. Decoding is unaffected either way — `drawImage` returns correct
+	 * pixels even when the element itself shows black, which is why thumbnails
+	 * kept working — so the frames are copied to a canvas we control.
+	 */
 	function applyChromaKeyEffect(clip: Clip): void {
 		if (!videoEl || !chromaCanvas) return;
 
-		const ck = clip.chromaKey;
-		chromaKeyActive = ck?.enabled ?? false;
+		chromaKeyActive = clip.chromaKey?.enabled ?? false;
 
-		if (!chromaKeyActive) {
-			// Hide chroma canvas, show video normally
-			chromaCanvas.style.display = 'none';
-			videoEl.style.opacity = '';
-			return;
-		}
-
-		// Show chroma canvas over video
 		chromaCanvas.style.display = 'block';
+		// Kept in the layout (not display:none) so it continues to decode.
 		videoEl.style.opacity = '0';
 	}
 
-	function processChromaKeyFrame(): void {
-		if (!chromaKeyActive || !videoEl || !chromaCanvas) return;
-		if (videoEl.readyState < 2) return;
-
-		const ctx = chromaCanvas.getContext('2d', { willReadFrequently: true });
+	/**
+	 * Copies the current decoded frame onto the display canvas.
+	 *
+	 * Runs every animation frame, so it is kept cheap: `willReadFrequently` is
+	 * only requested when chroma keying actually needs `getImageData`, since
+	 * that hint forces a software-backed canvas and makes the common case
+	 * noticeably slower.
+	 */
+	/** Draws any frame source onto the display canvas with object-fit. */
+	function paintSource(
+		source: CanvasImageSource,
+		sourceWidth: number,
+		sourceHeight: number,
+		clip: Clip | null
+	): void {
+		if (!chromaCanvas || sourceWidth === 0 || sourceHeight === 0) return;
+		const ctx = chromaCanvas.getContext('2d', { willReadFrequently: chromaKeyActive });
 		if (!ctx) return;
 
 		const w = chromaCanvas.width;
 		const h = chromaCanvas.height;
 		if (w === 0 || h === 0) return;
 
-		// Draw the current video frame
-		ctx.drawImage(videoEl, 0, 0, w, h);
+		// Reproduce the CSS object-fit the <video> used to apply itself.
+		const scale =
+			ui.previewFillMode === 'fill'
+				? Math.max(w / sourceWidth, h / sourceHeight)
+				: Math.min(w / sourceWidth, h / sourceHeight);
+		const drawW = sourceWidth * scale;
+		const drawH = sourceHeight * scale;
+		const dx = (w - drawW) / 2;
+		const dy = (h - drawH) / 2;
 
-		// Get pixel data and apply chroma key
-		const clip = findActiveClip();
-		if (!clip?.chromaKey?.enabled) return;
+		ctx.clearRect(0, 0, w, h);
+		ctx.drawImage(source, dx, dy, drawW, drawH);
 
+		if (!chromaKeyActive || !clip?.chromaKey?.enabled) return;
 		const imageData = ctx.getImageData(0, 0, w, h);
 		applyChromaKey(imageData, clip.chromaKey);
 		ctx.putImageData(imageData, 0, 0);
+	}
+
+	function processChromaKeyFrame(): void {
+		// Native mode owns the canvas; painting the (possibly wedged or black)
+		// video element over ffmpeg's frames would reintroduce every webview
+		// bug this path exists to escape.
+		if (nativeActive) return;
+		if (!videoEl || videoEl.readyState < 2 || videoEl.videoWidth === 0) return;
+		paintSource(videoEl, videoEl.videoWidth, videoEl.videoHeight, findActiveClip());
 	}
 
 	function resizeChromaCanvas(): void {
@@ -231,35 +382,36 @@
 			}
 		}
 
-		videoEl.style.transform = parts.length > 0 ? parts.join(' ') : '';
+		if (!chromaCanvas) return;
+		chromaCanvas.style.transform = parts.length > 0 ? parts.join(' ') : '';
 
 		// Crop via clip-path (inset)
 		const crop = clip.crop;
 		if (crop && (crop.top > 0 || crop.right > 0 || crop.bottom > 0 || crop.left > 0)) {
-			videoEl.style.clipPath = `inset(${crop.top}% ${crop.right}% ${crop.bottom}% ${crop.left}%)`;
+			chromaCanvas.style.clipPath = `inset(${crop.top}% ${crop.right}% ${crop.bottom}% ${crop.left}%)`;
 		} else {
-			videoEl.style.clipPath = '';
+			chromaCanvas.style.clipPath = '';
 		}
 	}
 
 	function applyVideoPosition(clip: Clip): void {
-		if (!videoEl) return;
+		if (!chromaCanvas) return;
 		const pos = clip.position ?? DEFAULT_CLIP_POSITION;
 
 		if (hasNonDefaultPosition(pos)) {
-			videoEl.style.left = `${pos.x}%`;
-			videoEl.style.top = `${pos.y}%`;
-			videoEl.style.width = `${pos.width}%`;
-			videoEl.style.height = `${pos.height}%`;
-			videoEl.style.zIndex = String(pos.zIndex);
-			videoEl.style.inset = 'auto';
+			chromaCanvas.style.left = `${pos.x}%`;
+			chromaCanvas.style.top = `${pos.y}%`;
+			chromaCanvas.style.width = `${pos.width}%`;
+			chromaCanvas.style.height = `${pos.height}%`;
+			chromaCanvas.style.zIndex = String(pos.zIndex);
+			chromaCanvas.style.inset = 'auto';
 		} else {
-			videoEl.style.left = '';
-			videoEl.style.top = '';
-			videoEl.style.width = '100%';
-			videoEl.style.height = '100%';
-			videoEl.style.zIndex = '';
-			videoEl.style.inset = '0';
+			chromaCanvas.style.left = '';
+			chromaCanvas.style.top = '';
+			chromaCanvas.style.width = '100%';
+			chromaCanvas.style.height = '100%';
+			chromaCanvas.style.zIndex = '';
+			chromaCanvas.style.inset = '0';
 		}
 	}
 
@@ -271,6 +423,7 @@
 			// Currently playing → will pause
 			stopLoop();
 			videoEl?.pause();
+			void stopNative();
 			return;
 		}
 
@@ -291,7 +444,18 @@
 			videoEl.playbackRate = clip.speed * playback.playbackRate;
 			// This play() call is in direct click context — guaranteed to work
 			videoEl.play().then(() => {
-				console.log('[MEOW] Audio playing:', { muted: videoEl.muted, volume: videoEl.volume });
+				// Log every input to getClipVolume, not just the result — a
+				// silent 0 was observed in the field with no visible cause.
+				const track = timeline.tracks.find((t) => t.clips.some((c) => c.id === clip.id));
+				console.log('[MEOW] Audio playing:', {
+					muted: videoEl.muted,
+					volume: videoEl.volume,
+					trackFound: !!track,
+					trackMuted: track?.muted,
+					trackVolume: track?.volume,
+					clipMuted: clip.muted,
+					clipVolume: clip.volume,
+				});
 			}).catch((err) => {
 				console.error('[MEOW] Play failed:', err.name, err.message);
 			});
@@ -299,6 +463,8 @@
 
 		// Start the RAF loop for timeline time advancement
 		startLoop();
+		void startNative(clip);
+		void startNativeAudio(clip);
 	}
 
 	// ── RAF Loop ────────────────────────────────────────────────────
@@ -356,7 +522,7 @@
 				const sourceTime = getSourceTime(clip, playback.currentTime);
 				videoEl.currentTime = sourceTime;
 				videoEl.volume = getClipVolume(clip);
-				videoEl.muted = false;
+				videoEl.muted = nativeAudioActive;
 				if (clip.reversed) {
 					// Reversed: pause video, seek manually each frame
 					videoEl.pause();
@@ -364,8 +530,12 @@
 					videoEl.playbackRate = clip.speed * playback.playbackRate;
 					videoEl.play().catch(() => {});
 				}
+				// Each clip gets its own decode stream from its own source time.
+				void startNative(clip);
+				void startNativeAudio(clip);
 			} else {
 				videoEl?.pause();
+				void stopNative();
 				activeClipId = null;
 			}
 		}
@@ -381,11 +551,26 @@
 			}
 		}
 
-		// 5. Text overlays
-		drawTextOverlays();
+		// 4b. Keep ffmpeg-decoded audio locked to the timeline clock.
+		if (nativeAudioActive && clip && !clipChanged) {
+			const expectedAudio = getSourceTime(clip, playback.currentTime);
+			if (Math.abs(nativeAudio.position() - expectedAudio) > 0.3) {
+				void startNativeAudio(clip);
+			} else {
+				nativeAudio.setVolume(getClipVolume(clip));
+			}
+		}
 
-		// 6. Chroma key frame processing
-		processChromaKeyFrame();
+		// 5. Frame paint: ffmpeg-decoded frames when available, else the
+		// video element (web builds, or assets without a scratch copy).
+		if (nativeActive && clip) {
+			paintNative(clip);
+		} else {
+			processChromaKeyFrame();
+		}
+
+		// 6. Text overlays paint above the frame.
+		drawTextOverlays();
 
 		rafId = requestAnimationFrame(tick);
 	}
@@ -412,11 +597,14 @@
 						videoEl.play().catch(() => {});
 					}
 					startLoop();
+					void startNative(clip);
+					void startNativeAudio(clip);
 				}
 			}
 		} else {
 			stopLoop();
 			videoEl.pause();
+			void stopNative();
 		}
 	});
 
@@ -431,6 +619,26 @@
 					const sourceTime = getSourceTime(clip, playback.currentTime);
 					if (Math.abs(videoEl.currentTime - sourceTime) > 0.04) {
 						videoEl.currentTime = sourceTime;
+					}
+
+					// Native scrub: decode exactly the frame under the playhead.
+					// The token discards stale responses when scrubbing fast.
+					const name = nativeScratchName(clip);
+					if (name) {
+						nativeActive = true;
+						const token = ++nativeScrubToken;
+						const width = Math.min(1280, Math.max(320, chromaCanvas?.width || 960));
+						void nativeFrameAt(name, sourceTime, width).then((bitmap) => {
+							if (!bitmap) return;
+							if (token !== nativeScrubToken) {
+								bitmap.close();
+								return;
+							}
+							lastNativeBitmap?.close();
+							lastNativeBitmap = bitmap;
+							paintSource(bitmap, bitmap.width, bitmap.height, clip);
+							drawTextOverlays();
+						});
 					}
 				}
 				drawTextOverlays();

@@ -66,6 +66,27 @@ export async function importMediaFile(
 		thumbnails = [blobUrl];
 	}
 
+	// On the desktop, stage a copy in the scratch directory so the bundled
+	// ffmpeg can decode preview frames directly from disk. Streamed in chunks;
+	// failure only disables the native preview path, never the import.
+	let scratchName: string | undefined;
+	if (type !== 'video') {
+		// nothing to stage
+	} else if (!ffmpeg.writeFileStreaming) {
+		console.warn('[import] engine has no streaming write — native preview disabled');
+	} else {
+		const started = performance.now();
+		try {
+			scratchName = `media_${id}${getExtFromName(usedFile.name)}`;
+			console.info(`[import] staging "${scratchName}" (${usedFile.size} bytes) for native preview`);
+			await ffmpeg.writeFileStreaming(scratchName, usedFile);
+			console.info(`[import] staged in ${Math.round(performance.now() - started)}ms`);
+		} catch (err) {
+			console.warn('[import] scratch copy failed, preview falls back to webview:', err);
+			scratchName = undefined;
+		}
+	}
+
 	return {
 		id,
 		name: file.name,
@@ -76,6 +97,7 @@ export async function importMediaFile(
 		thumbnails,
 		waveform,
 		addedAt: Date.now(),
+		scratchName,
 	};
 }
 
