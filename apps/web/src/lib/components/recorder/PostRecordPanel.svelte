@@ -7,6 +7,8 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { createFFmpegEngine, type FFmpegEngine } from '$lib/engine/ffmpeg-engine.js';
+	import { isDesktop } from '$lib/desktop/env.js';
+	import { saveOutput } from '$lib/desktop/save.js';
 
 	let {
 		result,
@@ -17,6 +19,15 @@
 	} = $props();
 
 	const auth = getAuth();
+
+	/**
+	 * Whether sharing to an account is even a possibility.
+	 *
+	 * The desktop app has no backend and no sign-in, so offering "Login to
+	 * Upload" after a recording asked for a password that does not exist. It
+	 * saves to disk instead.
+	 */
+	const canUpload = !isDesktop();
 
 	let mediaUrl = $derived(URL.createObjectURL(result.blob));
 	let isAudioOnly = $derived(result.mimeType.startsWith('audio/'));
@@ -85,20 +96,35 @@
 	let convertFormat = $state('');
 	let ffmpegInstance: FFmpegEngine | null = null;
 
-	function downloadBlob(blob: Blob, filename: string) {
-		const url = URL.createObjectURL(blob);
-		const a = document.createElement('a');
-		a.href = url;
-		a.download = filename;
-		a.click();
-		URL.revokeObjectURL(url);
+	let saveStatus = $state<string | null>(null);
+
+	/**
+	 * Puts the recording somewhere the user chose.
+	 *
+	 * This used to click a hidden anchor, which the desktop webview does not
+	 * act on — the button appeared to work and no file ever arrived. On the
+	 * desktop `saveOutput` opens the real Save dialog and copies the bytes
+	 * natively; on the web it still falls back to the download.
+	 */
+	async function saveRecording(blob: Blob, filename: string) {
+		try {
+			const saved = await saveOutput({ suggestedName: filename, blob });
+			if (saved.saved && saved.path) {
+				saveStatus = `Saved to ${saved.path}`;
+				setTimeout(() => (saveStatus = null), 8000);
+			}
+		} catch (err) {
+			console.error('Save failed:', err);
+			saveStatus = `Could not save: ${err}`;
+			setTimeout(() => (saveStatus = null), 8000);
+		}
 	}
 
 	function handleDownloadWebm() {
 		showFormatPicker = false;
 		const ext = isAudioOnly ? 'webm' : 'webm';
 		const prefix = isAudioOnly ? 'audio-recording' : 'recording';
-		downloadBlob(result.blob, `${prefix}.${ext}`);
+		void saveRecording(result.blob, `${prefix}.${ext}`);
 	}
 
 	async function handleDownloadGif() {
@@ -142,7 +168,7 @@
 
 			const outputData = await ffmpegInstance.readFile('output.gif');
 			const blob = new Blob([outputData], { type: 'image/gif' });
-			downloadBlob(blob, 'recording.gif');
+			await saveRecording(blob, 'recording.gif');
 
 			await ffmpegInstance.deleteFile('input.webm');
 			await ffmpegInstance.deleteFile('palette.png');
@@ -195,7 +221,7 @@
 			const outputData = await ffmpegInstance.readFile(outputFile);
 			const mimeType = format === 'mp4' ? 'video/mp4' : 'video/quicktime';
 			const blob = new Blob([outputData], { type: mimeType });
-			downloadBlob(blob, `recording.${format}`);
+			await saveRecording(blob, `recording.${format}`);
 
 			await ffmpegInstance.deleteFile('input.webm');
 			await ffmpegInstance.deleteFile(outputFile);
@@ -326,7 +352,7 @@
 
 		{#if uploadState === 'idle'}
 			<!-- Title input -->
-			{#if auth.isAuthenticated}
+			{#if canUpload && auth.isAuthenticated}
 				<div class="title-field">
 					<input
 						type="text"
@@ -337,9 +363,13 @@
 				</div>
 			{/if}
 
+			{#if saveStatus}
+				<div class="save-status">{saveStatus}</div>
+			{/if}
+
 			<!-- Action buttons -->
 			<div class="actions">
-				{#if auth.isAuthenticated}
+				{#if canUpload && auth.isAuthenticated}
 					<button class="action-btn primary" onclick={handleUpload}>
 						<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 							<path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/>
@@ -348,7 +378,7 @@
 						</svg>
 						Upload & Share
 					</button>
-				{:else}
+				{:else if canUpload}
 					<a href="/login" class="action-btn primary login-link">
 						<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 							<path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
@@ -358,7 +388,7 @@
 						Login to Upload
 					</a>
 				{/if}
-				{@render downloadBtn('Download')}
+				{@render downloadBtn(canUpload ? 'Download' : 'Save')}
 				<button class="action-btn ghost" onclick={onrerecord}>
 					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 						<path d="M1 4v6h6"/>
@@ -630,6 +660,16 @@
 	.action-btn.ghost:hover {
 		color: var(--text-primary);
 		background: rgba(255, 255, 255, 0.04);
+	}
+
+	.save-status {
+		margin: 0 0 10px;
+		padding: 8px 10px;
+		border-radius: 6px;
+		background: rgba(255, 255, 255, 0.06);
+		color: var(--text-secondary);
+		font-size: 11px;
+		word-break: break-all;
 	}
 
 	.login-link {
