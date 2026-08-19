@@ -84,3 +84,46 @@ describe('finding an asset the bytes', () => {
 		);
 	});
 });
+
+describe('refusing to load something enormous', () => {
+	/**
+	 * Reading through the IPC costs a copy in Rust, one in transit and one in
+	 * the page. A 978 MB source is three gigabytes before anything has decoded
+	 * it — which is how a 50-minute clip took the whole app down.
+	 */
+	function sized(bytes: number): FFmpegEngine {
+		return {
+			fileSize: vi.fn(async () => bytes),
+			readFile: vi.fn(async () => new Uint8Array(8).buffer as ArrayBuffer),
+		} as unknown as FFmpegEngine;
+	}
+
+	it('reads a file of ordinary size', async () => {
+		const staged = asset({ scratchName: 'media_a1.mp4' });
+
+		expect((await assetBlob(staged, sized(50 * 1024 * 1024))).size).toBe(8);
+	});
+
+	it('refuses one that would not survive the copies', async () => {
+		const staged = asset({ scratchName: 'media_a1.mp4' });
+
+		await expect(assetBlob(staged, sized(978 * 1024 * 1024))).rejects.toThrow(/too large/);
+	});
+
+	it('says how big it is and what to do instead', async () => {
+		const staged = asset({ scratchName: 'media_a1.mp4' });
+
+		const error = await assetBlob(staged, sized(978 * 1024 * 1024)).catch((e) => e);
+
+		expect(error.message).toContain('978 MB');
+		expect(error.message).toContain('shorter section');
+	});
+
+	it('does not even attempt the read', async () => {
+		const engine = sized(978 * 1024 * 1024);
+
+		await assetBlob(asset({ scratchName: 'media_a1.mp4' }), engine).catch(() => {});
+
+		expect(engine.readFile).not.toHaveBeenCalled();
+	});
+});

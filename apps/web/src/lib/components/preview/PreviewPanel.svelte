@@ -11,7 +11,14 @@
 	import { getUI } from '$lib/state/context.js';
 	import { isDesktop } from '$lib/desktop/env.js';
 	import type { FFmpegEngine } from '$lib/engine/ffmpeg-engine.js';
-	import { loadClipAudio, NativeAudioPlayer } from '$lib/engine/native-audio.js';
+	import { loadAudioWindow, clearAudioCache, NativeAudioPlayer } from '$lib/engine/native-audio.js';
+	import {
+		WINDOW_SECONDS,
+		windowIndexFor,
+		windowStart,
+		offsetInWindow,
+		windowToPrefetch,
+	} from '$lib/playback/audio-windows.js';
 	import { NativePreviewStream, nativeFrameAt } from '$lib/engine/native-preview.js';
 	import TransportControls from './TransportControls.svelte';
 	import AnnotationLayer from './AnnotationLayer.svelte';
@@ -53,6 +60,8 @@
 	const nativeStream = new NativePreviewStream();
 	const nativeAudio = new NativeAudioPlayer();
 	let nativeAudioActive = false;
+	/** Which window of the base clip's audio is playing, if any. */
+	let audioWindow: number | null = null;
 	let nativeActive = false;
 	let lastNativeBitmap: ImageBitmap | null = null;
 	let nativeScrubToken = 0;
@@ -74,7 +83,7 @@
 	 * editor. Each bed clip gets its own player because they overlap by
 	 * design — that is what a bed is.
 	 */
-	const bedPlayers = new Map<string, NativeAudioPlayer>();
+	const bedPlayers = new Map<string, { player: NativeAudioPlayer; window: number }>();
 
 	/**
 	 * Starts and stops bed players to match the playhead.
@@ -89,8 +98,21 @@
 		const { start, stop } = diffBed(bedPlayers.keys(), wanted);
 
 		for (const clipId of stop) {
-			bedPlayers.get(clipId)?.stop();
+			bedPlayers.get(clipId)?.player.stop();
 			bedPlayers.delete(clipId);
+		}
+
+		// A bed clip that has run off the end of its window needs the next one,
+		// exactly as the base clip does.
+		for (const bed of wanted) {
+			const entry = bedPlayers.get(bed.clip.id);
+			if (!entry) continue;
+			const at = bedSourceTime(bed.clip, playback.currentTime);
+			if (windowIndexFor(at) !== entry.window) {
+				entry.player.stop();
+				bedPlayers.delete(bed.clip.id);
+				start.push(bed);
+			}
 		}
 
 		for (const bed of start) {
@@ -98,21 +120,27 @@
 			const asset = mediaLibrary.getAssetById(bed.clip.assetId);
 			if (!scratchName || !asset) continue;
 
+			const at = bedSourceTime(bed.clip, playback.currentTime);
+			const index = windowIndexFor(at);
+
 			// Claim the slot before awaiting, so a second pass through the
 			// loop does not start the same clip twice.
 			const player = new NativeAudioPlayer();
-			bedPlayers.set(bed.clip.id, player);
+			const entry = { player, window: index };
+			bedPlayers.set(bed.clip.id, entry);
 
-			const buffer = await loadClipAudio(ffmpeg, asset.id, scratchName);
+			const buffer = await loadAudioWindow(
+				ffmpeg, asset.id, scratchName, windowStart(index), WINDOW_SECONDS
+			);
 			// The playhead may have left this clip while the decode ran.
-			if (!buffer || bedPlayers.get(bed.clip.id) !== player || !playback.playing) {
+			if (!buffer || bedPlayers.get(bed.clip.id) !== entry || !playback.playing) {
 				bedPlayers.delete(bed.clip.id);
 				continue;
 			}
 
 			player.start(
 				buffer,
-				bedSourceTime(bed.clip, playback.currentTime),
+				offsetInWindow(at, index),
 				bed.clip.speed * playback.playbackRate,
 				bed.volume * playback.outputVolume
 			);
@@ -120,7 +148,7 @@
 	}
 
 	function stopAudioBed(): void {
-		for (const player of bedPlayers.values()) player.stop();
+		for (const entry of bedPlayers.values()) entry.player.stop();
 		bedPlayers.clear();
 	}
 
@@ -160,30 +188,74 @@
 	async function startNativeAudio(clip: Clip): Promise<void> {
 		nativeAudio.stop();
 		nativeAudioActive = false;
+		audioWindow = null;
 		if (!ffmpeg || clip.reversed) return;
 
 		const name = nativeScratchName(clip);
 		const asset = mediaLibrary.getAssetById(clip.assetId);
 		if (!name || !asset) return;
 
-		const buffer = await loadClipAudio(ffmpeg, asset.id, name);
+		// One window, not the whole clip. Decoding a 50-minute source whole
+		// produced a 536 MB WAV and a 1.07 GB float buffer, and the process
+		// was killed before a single sample played.
+		const sourceTime = getSourceTime(clip, playback.currentTime);
+		const index = windowIndexFor(sourceTime);
+		const buffer = await loadAudioWindow(
+			ffmpeg, asset.id, name, windowStart(index), WINDOW_SECONDS
+		);
 		if (!buffer) return;
 		// The clip may have moved on while the extraction ran.
 		if (!playback.playing || findActiveClip()?.id !== clip.id) return;
 
 		if (videoEl) videoEl.muted = true;
 		nativeAudioActive = true;
+		audioWindow = index;
 		nativeAudio.start(
 			buffer,
-			getSourceTime(clip, playback.currentTime),
+			offsetInWindow(sourceTime, index),
 			clip.speed * playback.playbackRate,
 			getClipVolume(clip)
 		);
 	}
 
+	/** Where the base clip's audio has reached in the source, across windows. */
+	function nativeAudioPosition(): number {
+		if (audioWindow === null) return 0;
+		return windowStart(audioWindow) + nativeAudio.position();
+	}
+
+	/**
+	 * Keeps the base clip's audio on the right window.
+	 *
+	 * Crossing a boundary restarts the player on the next window, and the one
+	 * after that is fetched a few seconds early so the join is not audible.
+	 */
+	function advanceAudioWindow(clip: Clip): void {
+		if (!ffmpeg || audioWindow === null) return;
+
+		const name = nativeScratchName(clip);
+		const asset = mediaLibrary.getAssetById(clip.assetId);
+		if (!name || !asset) return;
+
+		const sourceTime = getSourceTime(clip, playback.currentTime);
+
+		if (windowIndexFor(sourceTime) !== audioWindow) {
+			void startNativeAudio(clip);
+			return;
+		}
+
+		const ahead = windowToPrefetch(sourceTime, clip.sourceEnd);
+		if (ahead !== null) {
+			// Deliberately not awaited: this runs inside the frame loop, and
+			// the result is only wanted by the time the playhead gets there.
+			void loadAudioWindow(ffmpeg, asset.id, name, windowStart(ahead), WINDOW_SECONDS);
+		}
+	}
+
 	function stopNativeAudio(): void {
 		nativeAudio.stop();
 		nativeAudioActive = false;
+		audioWindow = null;
 	}
 
 	async function stopNative(): Promise<void> {
@@ -252,6 +324,9 @@
 		void stopNative();
 		stopAudioBed();
 		overlayFrames.clear();
+		// AudioBuffers are not small; holding them past the session is how the
+		// process grows without ever looking like a leak.
+		clearAudioCache();
 	});
 
 	// ── Helpers ─────────────────────────────────────────────────────
@@ -293,7 +368,7 @@
 			// Bed players carry the master level too, or muting would silence
 			// the base clip and leave the music playing.
 			for (const bed of audioBedClips(timeline.tracks, playback.currentTime)) {
-				bedPlayers.get(bed.clip.id)?.setVolume(bed.volume * level);
+				bedPlayers.get(bed.clip.id)?.player.setVolume(bed.volume * level);
 			}
 
 			const clip = findActiveClip();
@@ -669,10 +744,11 @@
 		// 4b. Keep ffmpeg-decoded audio locked to the timeline clock.
 		if (nativeAudioActive && clip && !clipChanged) {
 			const expectedAudio = getSourceTime(clip, playback.currentTime);
-			if (Math.abs(nativeAudio.position() - expectedAudio) > 0.3) {
+			if (Math.abs(nativeAudioPosition() - expectedAudio) > 0.3) {
 				void startNativeAudio(clip);
 			} else {
 				nativeAudio.setVolume(getClipVolume(clip));
+				advanceAudioWindow(clip);
 			}
 		}
 

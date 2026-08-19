@@ -15,10 +15,30 @@ import type { FFmpegEngine } from './ffmpeg-engine.js';
  * captions and silence detection came to fail on exactly the files that
  * imported most cleanly.
  */
+/**
+ * The largest file worth pulling into the page whole.
+ *
+ * Not a hard technical limit — a judgement about where the copies stop being
+ * survivable. Callers that need more must work in windows, the way preview
+ * audio does.
+ */
+export const MAX_WHOLE_READ_BYTES = 400 * 1024 * 1024;
+
 export async function assetBlob(asset: MediaAsset, ffmpeg?: FFmpegEngine): Promise<Blob> {
 	if (asset.file && asset.file.size > 0) return asset.file;
 
 	if (asset.scratchName && ffmpeg) {
+		// Reading a file this way costs a copy in Rust, one in transit and one
+		// in the page. A gigabyte source is three gigabytes before anything
+		// has decoded it, which is how a 50-minute clip killed the app.
+		const size = (await ffmpeg.fileSize?.(asset.scratchName)) ?? 0;
+		if (size > MAX_WHOLE_READ_BYTES) {
+			throw new Error(
+				`"${asset.name}" is ${Math.round(size / (1024 * 1024))} MB, which is too large to load ` +
+					`into memory at once. Split it on the timeline and run this on a shorter section.`
+			);
+		}
+
 		const bytes = await ffmpeg.readFile(asset.scratchName);
 		return new Blob([bytes], { type: mimeFor(asset.type) });
 	}

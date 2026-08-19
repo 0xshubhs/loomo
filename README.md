@@ -205,7 +205,7 @@ implementation of it.
 ## Testing
 
 ```bash
-cd apps/web && bun run test     # ~941 tests
+cd apps/web && bun run test     # ~963 tests
 cd apps/web && bun run check    # typecheck, expects 0 errors
 cd apps/desktop/src-tauri && cargo test
 ```
@@ -220,6 +220,21 @@ when no binary is present.
 
 Every one of these cost real debugging time. They are documented because the
 symptoms point somewhere other than the cause.
+
+**Preview audio is extracted a window at a time.** Decoding a whole clip did
+not survive a real file: a 50-minute source produced a 536 MB WAV, read back
+through the IPC in one piece and expanded by `decodeAudioData` into a 1.07 GB
+float buffer — about 2.5 GB peak for one clip, with a cache that held three.
+The app was OOM-killed with the status line still reading "Extracting audio".
+Windows are 30s, two are held, and length stops mattering.
+
+**`-ss` before `-i` is fast and lands somewhere else.** Measured on a 978 MB
+MKV: 23368 of 32000 bytes differed from an accurate seek. The usual hybrid
+(`-ss near -i file -ss remainder`) is no better — it adds a fixed offset to an
+input seek that was already inexact. Preview audio seeks accurately (`-ss`
+after `-i`), which costs ~0.5ms per second of source, and prefetches far
+enough ahead to hide it. Consecutive windows extracted this way were verified
+to join sample-exactly.
 
 **WebKitGTK percent-decodes filenames in `<input type="file">`.** A file
 genuinely named `Members%20Only%20S2.mp4` — which is what a browser download of

@@ -94,7 +94,9 @@ Tensor input/output names are guesses until a model actually loads.
   preview. The annotation layer proves that interaction works.
 - **Speed-curve audio** is stretched by the *average* rate, so long ramps
   drift. Exact variable-rate audio needs per-segment resampling.
-- **Preview audio** decodes a whole clip to an AudioBuffer (~40 MB/minute).
+- **Preview audio window fetches are not cancelled.** Scrubbing quickly
+  across a long clip queues extractions for windows the playhead has already
+  left. They are cheap and the cache bounds memory, but the work is wasted.
 - **Composited preview layers are decoded at 640px** and cached at 1/12s
   granularity, so an overlay is a fraction of a second stale while scrubbing
   fast. The base clip is not affected.
@@ -107,6 +109,14 @@ Tensor input/output names are guesses until a model actually loads.
 ---
 
 ### Fixed since the last pass
+
+- **Preview audio decoded whole clips.** ~40 MB/minute, so a 50-minute source
+  reached ~2.5 GB and the app was OOM-killed mid-import. It reads 30-second
+  windows now, holding two.
+- **Captions and silence detection read the whole file** into the page. A
+  978 MB source is three gigabytes once the IPC copies are counted; they now
+  refuse above 400 MB with a message saying to split the clip instead. Doing
+  these in windows is the real fix and is not done.
 
 - **Import by path, not through the webview.** WebKitGTK's file input
   percent-decodes the filename it reports; a file actually named
