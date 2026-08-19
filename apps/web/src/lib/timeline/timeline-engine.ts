@@ -1,4 +1,4 @@
-import type { Track, Clip, SnapPoint } from '$lib/types/index.js';
+import type { Track, Clip, SnapPoint, Marker } from '$lib/types/index.js';
 
 export function getClipAtTime(tracks: Track[], trackIndex: number, time: number): Clip | null {
 	if (trackIndex < 0 || trackIndex >= tracks.length) return null;
@@ -48,8 +48,18 @@ export function getClipAtPosition(
 	return null;
 }
 
-export function getSnapPoints(tracks: Track[], excludeClipId?: string): SnapPoint[] {
+export function getSnapPoints(
+	tracks: Track[],
+	excludeClipId?: string,
+	markers: Marker[] = []
+): SnapPoint[] {
 	const points: SnapPoint[] = [];
+
+	// Markers exist so a cut can be marked while watching and made afterwards;
+	// that only works if dragging a clip actually lands on one.
+	for (const marker of markers) {
+		points.push({ time: marker.time, source: 'marker' });
+	}
 
 	for (const track of tracks) {
 		for (const clip of track.clips) {

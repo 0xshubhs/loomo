@@ -1,5 +1,5 @@
 import type { MediaAsset, MediaMetadata } from '$lib/types/media.js';
-import type { Track } from '$lib/types/timeline.js';
+import type { Track, Marker } from '$lib/types/timeline.js';
 import type { Transition, TextOverlay, ShapeOverlay, CaptionTrack } from '$lib/types/effects.js';
 import type { Annotation } from '$lib/types/annotations.js';
 
@@ -26,6 +26,15 @@ export interface StoredAsset {
 	file: string;
 	metadata: MediaMetadata;
 	thumbnails: string[];
+	/**
+	 * The audio waveform, base64-encoded Float32 samples.
+	 *
+	 * Kept because regenerating it means decoding the whole file again — a
+	 * reopened project would otherwise show flat grey bars until every audio
+	 * clip had been decoded a second time. 1000 float samples is ~5 KB
+	 * encoded, which is cheap next to what it saves.
+	 */
+	waveform: string | null;
 }
 
 export interface ProjectDocument {
@@ -38,6 +47,7 @@ export interface ProjectDocument {
 	textOverlays: TextOverlay[];
 	shapeOverlays: ShapeOverlay[];
 	annotations: Annotation[];
+	markers: Marker[];
 	captions: CaptionTrack | null;
 	aspectRatio: string | null;
 }
@@ -50,6 +60,7 @@ export interface EditorSnapshot {
 	textOverlays: TextOverlay[];
 	shapeOverlays: ShapeOverlay[];
 	annotations: Annotation[];
+	markers: Marker[];
 	captions: CaptionTrack | null;
 	aspectRatio: string | null;
 }
@@ -81,12 +92,14 @@ export function buildDocument(
 				// Data URLs, so a reopened project shows its filmstrip without
 				// having to decode every clip again.
 				thumbnails: asset.thumbnails.filter((t) => t.startsWith('data:')),
+				waveform: encodeWaveform(asset.waveform),
 			})),
 		tracks: snapshot.tracks,
 		transitions: snapshot.transitions,
 		textOverlays: snapshot.textOverlays,
 		shapeOverlays: snapshot.shapeOverlays,
 		annotations: snapshot.annotations,
+		markers: snapshot.markers,
 		captions: snapshot.captions,
 		aspectRatio: snapshot.aspectRatio,
 	};
@@ -96,6 +109,43 @@ export function buildDocument(
 export function storedFilename(asset: { id: string; name: string }): string {
 	const extension = asset.name.includes('.') ? asset.name.split('.').pop()! : 'bin';
 	return `${asset.id}.${extension.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
+}
+
+/**
+ * Waveform samples as base64.
+ *
+ * JSON has no float array, and writing 1000 numbers as text costs three times
+ * what the bytes do. Encoding the buffer keeps the samples exact.
+ */
+export function encodeWaveform(waveform: Float32Array | null): string | null {
+	if (!waveform || waveform.length === 0) return null;
+
+	const bytes = new Uint8Array(waveform.buffer, waveform.byteOffset, waveform.byteLength);
+	let binary = '';
+	// Chunked, because spreading a large array into String.fromCharCode blows
+	// the argument limit.
+	for (let i = 0; i < bytes.length; i += 8192) {
+		binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+	}
+	return btoa(binary);
+}
+
+/** Reads a stored waveform back, returning null for anything unreadable. */
+export function decodeWaveform(encoded: string | null | undefined): Float32Array | null {
+	if (!encoded) return null;
+
+	try {
+		const binary = atob(encoded);
+		// A truncated buffer would make the Float32Array constructor throw;
+		// a waveform is decoration, so drop it rather than fail the open.
+		if (binary.length % 4 !== 0) return null;
+
+		const bytes = new Uint8Array(binary.length);
+		for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+		return new Float32Array(bytes.buffer);
+	} catch {
+		return null;
+	}
 }
 
 export class ProjectFormatError extends Error {}
@@ -139,6 +189,7 @@ export function parseDocument(json: string): ProjectDocument {
 		textOverlays: Array.isArray(doc.textOverlays) ? doc.textOverlays : [],
 		shapeOverlays: Array.isArray(doc.shapeOverlays) ? doc.shapeOverlays : [],
 		annotations: Array.isArray(doc.annotations) ? doc.annotations : [],
+		markers: Array.isArray(doc.markers) ? doc.markers : [],
 		captions: doc.captions ?? null,
 		aspectRatio: doc.aspectRatio ?? null,
 	};

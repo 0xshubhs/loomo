@@ -1,4 +1,4 @@
-import type { Track, Clip } from '$lib/types/index.js';
+import type { Track, Clip, Marker } from '$lib/types/index.js';
 import type { Transition, TextOverlay, ShapeOverlay } from '$lib/types/index.js';
 import type { Annotation } from '$lib/types/annotations.js';
 import { generateId } from '$lib/utils/id.js';
@@ -14,6 +14,11 @@ export class TimelineStore {
 	 * time the clip beneath is split or moved would lose it.
 	 */
 	annotations = $state<Annotation[]>([]);
+	/**
+	 * Named points in time. They render nothing and export nothing — they are
+	 * notes about where something is, and clips snap to them.
+	 */
+	markers = $state<Marker[]>([]);
 
 	get totalDuration(): number {
 		if (this.tracks.length === 0) return 0;
@@ -177,5 +182,6 @@ export class TimelineStore {
 		this.textOverlays = [];
 		this.shapeOverlays = [];
 		this.annotations = [];
+		this.markers = [];
 	}
 }

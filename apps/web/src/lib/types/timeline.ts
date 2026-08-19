@@ -222,6 +222,20 @@ export interface TimelineState {
 	duration: number;
 }
 
+/**
+ * A named point on the timeline.
+ *
+ * Renders nothing and exports nothing — it is a note to the editor about where
+ * something is. Clips snap to markers, so "cut here" can be marked while
+ * watching and acted on afterwards.
+ */
+export interface Marker {
+	id: string;
+	time: number;
+	label: string;
+	color: string;
+}
+
 export interface SnapPoint {
 	time: number;
 	source: 'clip-start' | 'clip-end' | 'playhead' | 'marker';

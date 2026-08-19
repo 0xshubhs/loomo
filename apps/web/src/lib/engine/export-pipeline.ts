@@ -56,7 +56,22 @@ import {
  */
 export type AssetResolver = (
 	assetId: string
-) => { file: File; name: string; scratchName?: string } | undefined;
+) => {
+	file: File;
+	name: string;
+	scratchName?: string;
+	/**
+	 * Dimensions already known from import, when they are.
+	 *
+	 * A reopened project holds an empty `File` — its bytes live on disk, and
+	 * materialising them just to read a width would defeat the point — so
+	 * probing the File would report "unknown" and push every export onto the
+	 * re-encode path. The metadata recorded at import is the same number the
+	 * probe would have found.
+	 */
+	width?: number;
+	height?: number;
+} | undefined;
 
 /**
  * Where the finished render ended up.
@@ -146,7 +161,7 @@ export async function exportTimeline(
 	if (!hasEffects) {
 		const firstAsset = getAssetFile(sortedClips[0].assetId);
 		if (firstAsset) {
-			const sourceRes = await probeVideoResolution(firstAsset.file);
+			const sourceRes = await probeVideoResolution(firstAsset);
 			needsScale =
 				sourceRes.width <= 0 ||
 				sourceRes.height <= 0 ||
@@ -163,6 +178,9 @@ export async function exportTimeline(
 	const gains = config.normalizeLoudness
 		? await measureLoudness(ffmpeg, audioClipsForLoudness, getAssetFile, progress)
 		: new Map<string, number>();
+	// A still cannot be stream-copied: it has to be looped into a real video
+	// stream first.
+	const stills = hasStillClips(sortedClips);
 	const hasLoudnessGain = sortedClips.some((clip) => {
 		const gain = gains.get(clip.id);
 		return gain !== undefined && !!gainFilter(gain);
@@ -186,10 +204,10 @@ export async function exportTimeline(
 		result = await exportFilterComplex(
 			ffmpeg, sortedClips, textOverlays, shapeOverlays, config, targetWidth, targetHeight, outputFile, getAssetFile, progress, captionTrack, annotations, gains
 		);
-	} else if (!needsScale && !hasLoudnessGain && sortedClips.length === 1) {
+	} else if (!needsScale && !hasLoudnessGain && !stills && sortedClips.length === 1) {
 		// Strategy A: Single clip, source resolution — stream copy
 		result = await exportSingleClipStreamCopy(ffmpeg, sortedClips[0], config, outputFile, getAssetFile, progress, gains);
-	} else if (!needsScale && !hasLoudnessGain) {
+	} else if (!needsScale && !hasLoudnessGain && !stills) {
 		// Strategy A: Multi-clip, source resolution — stream copy concat
 		result = await exportConcatStreamCopy(ffmpeg, sortedClips, config, outputFile, getAssetFile, progress, gains);
 	} else {
@@ -222,6 +240,61 @@ export async function exportTimeline(
 	return result;
 }
 
+/**
+ * Input flags for one clip in the per-clip strategies.
+ *
+ * A still is not a one-frame video: `-i photo.png -t 10` yields a single
+ * frame, because `-t` can only shorten an input, never extend one. It has to
+ * be looped at a frame rate and then bounded. Without this, an image placed on
+ * the timeline — a title card, a slide held over the opening seconds — came
+ * out as a single frame or failed the graph outright.
+ */
+export function clipInputArgs(clip: Clip, path: string, fps: number): string[] {
+	if (clip.type === 'image') {
+		return ['-loop', '1', '-framerate', String(fps), '-t', String(clip.duration), '-i', path];
+	}
+
+	const args: string[] = [];
+	if (clip.sourceStart > 0.01) args.push('-ss', String(clip.sourceStart));
+	args.push('-i', path, '-t', String(clip.duration));
+	return args;
+}
+
+/**
+ * Input flags for one clip in the filter_complex strategy.
+ *
+ * The graph trims with `trim`/`atrim`, so seeking and duration are left to it.
+ * Looping is not — a still has to be turned into a stream before the graph can
+ * trim anything out of it, and bounded too: `-loop 1` with no `-t` is an input
+ * that never ends.
+ */
+export function graphInputArgs(clip: Clip, path: string, fps: number): string[] {
+	if (clip.type === 'image') {
+		return ['-loop', '1', '-framerate', String(fps), '-t', String(clip.duration), '-i', path];
+	}
+	return ['-i', path];
+}
+
+/**
+ * A silent stereo input the length of a clip.
+ *
+ * Stills carry no audio stream. Concatenating a video clip that has one with
+ * an image that does not fails, and `[n:a]` on an image input is a graph error
+ * rather than silence, so one is manufactured.
+ */
+export function silentInputArgs(durationSeconds: number): string[] {
+	return [
+		'-f', 'lavfi',
+		'-t', String(durationSeconds),
+		'-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
+	];
+}
+
+/** True when any clip is a still, which rules out stream copy. */
+export function hasStillClips(clips: Clip[]): boolean {
+	return clips.some((clip) => clip.type === 'image');
+}
+
 // ── Probe source resolution (no WASM needed) ───────────────────────
 
 /**
@@ -231,13 +304,23 @@ export async function exportTimeline(
  * desktop engine there is no DOM to ask. Callers must treat zeros as "unknown"
  * and scale anyway, rather than assuming the source already matches.
  */
-function probeVideoResolution(file: File): Promise<{ width: number; height: number }> {
+function probeVideoResolution(asset: {
+	file: File;
+	width?: number;
+	height?: number;
+}): Promise<{ width: number; height: number }> {
+	// Known dimensions win: they are what the probe would report, and they are
+	// the only thing available once the File is a placeholder for bytes on disk.
+	if (asset.width && asset.height && asset.width > 0 && asset.height > 0) {
+		return Promise.resolve({ width: asset.width, height: asset.height });
+	}
+
 	if (typeof document === 'undefined') {
 		return Promise.resolve({ width: 0, height: 0 });
 	}
 
 	return new Promise((resolve) => {
-		const url = URL.createObjectURL(file);
+		const url = URL.createObjectURL(asset.file);
 		const video = document.createElement('video');
 		video.preload = 'metadata';
 
@@ -735,12 +818,9 @@ async function exportConcatStreamCopy(
 		const input = await prepareInput(ffmpeg, asset, `src_${i}.${getExt(asset.name)}`);
 		const inputPath = input.path;
 
-		const args: string[] = [];
-		if (clip.sourceStart > 0.01) {
-			args.push('-ss', String(clip.sourceStart));
-		}
-		args.push('-i', inputPath);
-		args.push('-t', String(clip.duration));
+		// Stills never reach this strategy — they have to be looped into a
+		// video stream first, which is not a copy.
+		const args: string[] = [...clipInputArgs(clip, inputPath, config.fps)];
 		args.push('-c:v', 'copy');
 		args.push('-c:a', 'copy');
 		args.push('-movflags', '+faststart');
@@ -823,12 +903,10 @@ async function exportReencodeConcat(
 
 		progress('encoding', 0.3 + (i / total) * 0.5);
 
-		const args: string[] = [];
-		if (clip.sourceStart > 0.01) {
-			args.push('-ss', String(clip.sourceStart));
-		}
-		args.push('-i', inputPath);
-		args.push('-t', String(clip.duration));
+		const args: string[] = [...clipInputArgs(clip, inputPath, config.fps)];
+		// A still has no audio stream of its own, and every encoded piece has
+		// to carry one or the concat that follows will not line up.
+		if (clip.type === 'image') args.push(...silentInputArgs(clip.duration));
 
 		// Build video filter chain: crop -> scale -> transform -> color filters
 		let vf = '';
@@ -1008,12 +1086,28 @@ async function exportFilterComplex(
 		inputPaths.push(inputPath);
 	}
 
-	// Build filter_complex args
+	// Build filter_complex args. One input per clip, in clip order, so the
+	// graph can address a clip's streams as [i:v] / [i:a].
 	const args: string[] = [];
 
-	for (const path of inputPaths) {
-		args.push('-i', path);
+	for (let i = 0; i < inputPaths.length; i++) {
+		args.push(...graphInputArgs(sortedClips[i], inputPaths[i], config.fps));
 	}
+
+	/**
+	 * Silent audio for every still, one input each.
+	 *
+	 * An image input has no audio stream, so `[i:a]` is a graph error rather
+	 * than silence — with a single image on the timeline the whole export
+	 * failed. These are appended after the clip inputs so clip indices stay
+	 * equal to input indices.
+	 */
+	const silentInputFor = new Map<number, number>();
+	sortedClips.forEach((clip, i) => {
+		if (clip.type !== 'image') return;
+		silentInputFor.set(i, inputPaths.length + silentInputFor.size);
+		args.push(...silentInputArgs(clip.duration));
+	});
 
 	const filterParts: string[] = [];
 	// sendcmd scripts for animated opacity, written to the working directory
@@ -1148,7 +1242,10 @@ async function exportFilterComplex(
 		if (curveFilter) {
 			audioFilters.push(...buildAtempoChain(averageSpeed(clip.speedCurve!)));
 		}
-		let aChain = `[${i}:a]atrim=start=${clip.sourceStart}:duration=${clip.duration},asetpts=PTS-STARTPTS`;
+		const audioInput = silentInputFor.get(i) ?? i;
+		// A still's silent input starts at zero however the clip was trimmed.
+		const audioStart = clip.type === 'image' ? 0 : clip.sourceStart;
+		let aChain = `[${audioInput}:a]atrim=start=${audioStart}:duration=${clip.duration},asetpts=PTS-STARTPTS`;
 		if (audioFilters.length > 0) {
 			aChain += ',' + audioFilters.join(',');
 		}

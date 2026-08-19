@@ -447,6 +447,78 @@ describe.skipIf(!ffmpegBin || !ffprobeBin)('export pipeline end to end', () => {
 		expect(Math.abs(first - second)).toBeGreaterThan(6);
 	}, 180_000);
 
+	it('holds an image at the start of the timeline for its full length', async () => {
+		// The user's case, said plainly: "put a video and an image, and that
+		// image will show for ten seconds at the start of the video."
+		//
+		// `-i photo.png -t 10` produces one frame — `-t` shortens an input, it
+		// cannot extend one — so this used to come out as a single frame or
+		// fail the graph outright.
+		const image = createClip({
+			id: 'img-clip',
+			name: 'overlay.png',
+			type: 'image',
+			assetId: 'asset-image',
+			trackId: 'track-1',
+			timelineStart: 0,
+			duration: 2,
+		});
+		const video = baseClip({ id: 'vid-clip', trackId: 'track-1', timelineStart: 2, duration: 2 });
+
+		const bytes = await runMultiTrack(
+			[{ id: 'track-1', type: 'video', clips: [image, video] }],
+			{ 'asset-image': { file: imageFile, name: 'overlay.png' } }
+		);
+
+		// Red for its whole span, and gone once the video takes over.
+		expect(frameIsRedAt(bytes, 0.2)).toBe(true);
+		expect(frameIsRedAt(bytes, 1.8)).toBe(true);
+		expect(frameIsRedAt(bytes, 3.0)).toBe(false);
+		expect(probe(bytes).duration).toBeGreaterThan(3.5);
+	}, 120_000);
+
+	it('exports a timeline that is nothing but an image', async () => {
+		const image = createClip({
+			id: 'img-clip',
+			name: 'overlay.png',
+			type: 'image',
+			assetId: 'asset-image',
+			trackId: 'track-1',
+			timelineStart: 0,
+			duration: 2,
+		});
+
+		const bytes = await runMultiTrack(
+			[{ id: 'track-1', type: 'video', clips: [image] }],
+			{ 'asset-image': { file: imageFile, name: 'overlay.png' } }
+		);
+
+		expect(probe(bytes).duration).toBeGreaterThan(1.5);
+		expect(frameIsRedAt(bytes, 1.5)).toBe(true);
+	}, 120_000);
+
+	it('gives an image clip an audio stream, so it can concat with a video', async () => {
+		// A still carries no audio. Concatenating one with a clip that has
+		// audio fails unless silence is manufactured for it.
+		const image = createClip({
+			id: 'img-clip',
+			name: 'overlay.png',
+			type: 'image',
+			assetId: 'asset-image',
+			trackId: 'track-1',
+			timelineStart: 0,
+			duration: 1,
+		});
+		const video = baseClip({ id: 'vid-clip', trackId: 'track-1', timelineStart: 1, duration: 2 });
+
+		const bytes = await runMultiTrack(
+			[{ id: 'track-1', type: 'video', clips: [image, video] }],
+			{ 'asset-image': { file: imageFile, name: 'overlay.png' } }
+		);
+
+		expect(probeStreams(bytes, 'mp4').map((s) => s.codec_type)).toContain('audio');
+	}, 120_000);
+
 	it('keeps an image placed on a second video track', async () => {
 		// The bug: the export read one track, so this image showed in the
 		// preview and was simply absent from the file.

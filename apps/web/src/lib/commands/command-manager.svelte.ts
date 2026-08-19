@@ -5,6 +5,17 @@ export class CommandManager {
 	redoStack = $state<Command[]>([]);
 	private maxHistory = 100;
 
+	/**
+	 * Bumped by anything that changes the timeline.
+	 *
+	 * Stack lengths cannot stand in for this: undoing a change moves a command
+	 * from one stack to the other, and undoing back to an empty stack is still
+	 * a project that differs from the one on disk. Nothing marked the project
+	 * dirty on an edit before this existed, so the leave prompt never appeared
+	 * and autosave had nothing to fire on.
+	 */
+	revision = $state(0);
+
 	get canUndo(): boolean {
 		return this.undoStack.length > 0;
 	}
@@ -21,6 +32,7 @@ export class CommandManager {
 
 	execute(command: Command): void {
 		command.execute();
+		this.revision++;
 		this.undoStack = [...this.undoStack, command];
 		this.redoStack = [];
 
@@ -34,6 +46,7 @@ export class CommandManager {
 		const stack = [...this.undoStack];
 		const command = stack.pop()!;
 		command.undo();
+		this.revision++;
 		this.undoStack = stack;
 		this.redoStack = [...this.redoStack, command];
 	}
@@ -43,12 +56,15 @@ export class CommandManager {
 		const stack = [...this.redoStack];
 		const command = stack.pop()!;
 		command.execute();
+		this.revision++;
 		this.redoStack = stack;
 		this.undoStack = [...this.undoStack, command];
 	}
 
+	/** Resets the history. Used when a project is opened or started fresh. */
 	clear(): void {
 		this.undoStack = [];
 		this.redoStack = [];
+		this.revision = 0;
 	}
 }

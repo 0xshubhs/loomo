@@ -1,5 +1,5 @@
 import type { Track, Clip } from '$lib/types/index.js';
-import type { Transition, TextOverlay, ShapeOverlay } from '$lib/types/index.js';
+import type { Transition, TextOverlay, ShapeOverlay, Marker } from '$lib/types/index.js';
 import { formatDuration } from '$lib/utils/time.js';
 
 export interface RenderState {
@@ -17,6 +17,7 @@ export interface RenderState {
 	snapLine: number | null;
 	/** Clip under the cursor, so trim handles can be shown before selecting. */
 	hoveredClipId?: string | null;
+	markers?: Marker[];
 }
 
 const COLORS = {
@@ -61,6 +62,9 @@ function getGroupColor(groupId: string): string {
 }
 
 const RULER_HEIGHT = 30;
+const MARKER_FLAG_HEIGHT = 12;
+const MARKER_FLAG_WIDTH = 9;
+const MARKER_LABEL_MAX_WIDTH = 90;
 const TRACK_HEIGHT = 80;
 const TRACK_GAP = 1;
 
@@ -140,6 +144,7 @@ export class TimelineRenderer {
 		this.renderTransitions(ctx, state);
 		this.renderTextOverlayMarkers(ctx, state);
 		this.renderShapeOverlayMarkers(ctx, state);
+		this.renderMarkers(ctx, height, state);
 		this.renderPlayhead(ctx, height, state);
 
 		if (state.snapLine !== null) {
@@ -448,6 +453,64 @@ export class TimelineRenderer {
 		}
 	}
 
+	/**
+	 * Markers: a flag in the ruler and a faint line down the tracks.
+	 *
+	 * The line is what makes them useful — a flag alone tells you a marker
+	 * exists, a line tells you which frame of which clip it falls on. It is
+	 * drawn under the playhead so the playhead stays the thing you follow.
+	 */
+	private renderMarkers(ctx: CanvasRenderingContext2D, height: number, state: RenderState): void {
+		const markers = state.markers ?? [];
+		if (markers.length === 0) return;
+
+		const width = this.canvas.clientWidth;
+		ctx.save();
+		ctx.font = '10px Inter, sans-serif';
+		ctx.textAlign = 'left';
+		ctx.textBaseline = 'middle';
+
+		for (const marker of markers) {
+			const x = Math.round(marker.time * state.pixelsPerSecond - state.scrollX) + 0.5;
+			// Off-screen markers still cost a label measurement, and a long
+			// timeline can hold a lot of them.
+			if (x < -MARKER_LABEL_MAX_WIDTH || x > width) continue;
+
+			ctx.strokeStyle = marker.color;
+			ctx.globalAlpha = 0.35;
+			ctx.lineWidth = 1;
+			ctx.beginPath();
+			ctx.moveTo(x, RULER_HEIGHT);
+			ctx.lineTo(x, height);
+			ctx.stroke();
+
+			ctx.globalAlpha = 1;
+			ctx.fillStyle = marker.color;
+			ctx.beginPath();
+			ctx.moveTo(x, RULER_HEIGHT - MARKER_FLAG_HEIGHT);
+			ctx.lineTo(x + MARKER_FLAG_WIDTH, RULER_HEIGHT - MARKER_FLAG_HEIGHT);
+			ctx.lineTo(x + MARKER_FLAG_WIDTH - 3, RULER_HEIGHT - MARKER_FLAG_HEIGHT / 2);
+			ctx.lineTo(x + MARKER_FLAG_WIDTH, RULER_HEIGHT);
+			ctx.lineTo(x, RULER_HEIGHT);
+			ctx.closePath();
+			ctx.fill();
+
+			// The label only goes next to the flag when there is room before
+			// the next marker; overlapping text is worse than no text.
+			const label = marker.label;
+			if (label) {
+				const available = nextMarkerGap(markers, marker, state.pixelsPerSecond);
+				const room = Math.min(available - MARKER_FLAG_WIDTH - 4, MARKER_LABEL_MAX_WIDTH);
+				if (room > 16) {
+					ctx.fillStyle = COLORS.rulerText;
+					ctx.fillText(truncate(ctx, label, room), x + MARKER_FLAG_WIDTH + 3, RULER_HEIGHT - 8);
+				}
+			}
+		}
+
+		ctx.restore();
+	}
+
 	private renderPlayhead(ctx: CanvasRenderingContext2D, height: number, state: RenderState): void {
 		const x = Math.round(state.currentTime * state.pixelsPerSecond - state.scrollX) + 0.5;
 
@@ -499,4 +562,24 @@ export class TimelineRenderer {
 	get trackGap(): number {
 		return TRACK_GAP;
 	}
+}
+
+/** Pixels between a marker and the next one along, or Infinity if it is last. */
+function nextMarkerGap(markers: Marker[], marker: Marker, pixelsPerSecond: number): number {
+	let nearest = Infinity;
+	for (const other of markers) {
+		if (other.time > marker.time) nearest = Math.min(nearest, other.time - marker.time);
+	}
+	return nearest === Infinity ? Infinity : nearest * pixelsPerSecond;
+}
+
+/** Clips a label to fit, with an ellipsis, measuring in the canvas's own font. */
+function truncate(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string {
+	if (ctx.measureText(text).width <= maxWidth) return text;
+
+	let cut = text;
+	while (cut.length > 1 && ctx.measureText(cut + '…').width > maxWidth) {
+		cut = cut.slice(0, -1);
+	}
+	return cut + '…';
 }

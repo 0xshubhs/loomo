@@ -31,16 +31,21 @@ Saving copies each clip into the project folder and reopening stages it back,
 both directions as a Rust file copy. The document format is versioned and
 refuses anything written by a newer build.
 
-Known gaps:
+Autosave runs every 30s of continuous editing — throttled from the first
+unsaved change, not debounced, so it fires during the long session it exists
+for. It skips an untouched editor so backing out of "New project" leaves
+nothing behind, and stays quiet on success. Waveforms and markers persist.
+Media that cannot be staged on open is named in a banner instead of a console
+warning, and a save that could not copy a clip says so.
 
-- **No autosave.** Leaving asks; a crash loses the edit.
-- **Reopened assets carry an empty `File`.** Nothing on the desktop path reads
-  it — ffmpeg works from the staged scratch copy — but `probeVideoResolution`
-  falls back to "unknown", which pushes the export onto the re-encode strategy
-  instead of stream copy. Correct output, slower than it needs to be.
-- **Waveforms are not saved**, so an audio clip reopens without its waveform.
-- **A missing media file is skipped with a console warning.** It should be
-  visible in the UI.
+Remaining gaps:
+
+- **Autosave writes the whole project**, media copies included. That is a
+  Rust `fs::copy` per asset every half minute of editing — fine for a handful
+  of clips, wasteful for fifty. It should skip assets whose copy is already
+  there and unchanged.
+- **A project cannot be duplicated or exported as a file.** There is no
+  "save as", and no way to move a project between machines.
 
 ---
 
@@ -85,15 +90,57 @@ Tensor input/output names are guesses until a model actually loads.
 
 ## 5. Known rough edges
 
-- **Markers** — `M` is in the keyboard map and wired to nothing.
 - **Mosaic regions** are slider-driven; they should be draggable on the
   preview. The annotation layer proves that interaction works.
 - **Speed-curve audio** is stretched by the *average* rate, so long ramps
   drift. Exact variable-rate audio needs per-segment resampling.
-- **The preview has not been checked against multi-track compositing.** The
-  exported file is verified by tests that sample real pixels; whether the
-  preview canvas draws overlay tracks the same way is unknown.
 - **Preview audio** decodes a whole clip to an AudioBuffer (~40 MB/minute).
+- **Composited preview layers are decoded at 640px** and cached at 1/12s
+  granularity, so an overlay is a fraction of a second stale while scrubbing
+  fast. The base clip is not affected.
+- **Bed audio is not drift-corrected.** The base clip resyncs when it drifts
+  past 0.45s; bed players are started once and left to Web Audio's clock. On
+  a long track they will separate.
+- **Markers do not ripple.** Removing a gap or retiming a clip moves the
+  footage out from under them.
+
+---
+
+### Fixed since the last pass
+
+- **Markers.** `M` was in the keyboard map and wired to nothing for the whole
+  life of the app. Now: add, remove, walk between, rename from the ruler,
+  drawn as a flag plus a line down the tracks, snapped to when dragging
+  clips, and saved with the project.
+- **Master mute.** `Ctrl+Shift+M` was also wired to nothing, and
+  `playback.volume` was state no code read. Both reach the preview now,
+  including the audio bed.
+- **Preview audio played one clip.** The export mixes every audio track, so a
+  music bed was in the file and not in the editor. Each sounding audio-track
+  clip now gets its own player, started and stopped against the playhead.
+- **Nothing marked the project dirty on an edit.** The leave prompt and
+  autosave both hang off `project.dirty`, and only the name field and the
+  aspect-ratio picker ever set it. Every timeline edit does now, via a
+  `revision` counter on the command manager.
+- **State stores were untestable.** `vitest.config.ts` had no Svelte plugin,
+  so constructing any runes class in a test threw `$state is not defined`.
+  Fixed; the command manager and playback store have tests now, and the rest
+  of the stores can.
+- **Images on the main track.** A still exported as a single frame, or failed
+  the filtergraph outright — `-t` shortens an input, it cannot extend one, and
+  an image input has no audio stream for `[n:a]` to address. Stills are now
+  looped at the export frame rate and given manufactured silence. This was the
+  headline case: "put a video and an image, and that image will show for ten
+  seconds at the start."
+- **Dead account code.** `(auth)/login`, `(auth)/signup`, `LoginForm`,
+  `SignupForm`, `api/auth.ts`, `api/client.ts`, `api/upload.ts`,
+  `api/videos.ts` and `AuthStore` were all still shipping in the binary and
+  reachable from nothing. A login page in an app whose README says there is
+  no account was the complaint that started this.
+- **The preview drew one track.** The export composited all of them, so an
+  image over the opening seconds previewed as nothing and exported
+  correctly. The preview now draws the layers above the base with the same
+  ordering rules and the same geometry function as the filtergraph.
 
 ---
 
@@ -108,9 +155,32 @@ Tensor input/output names are guesses until a model actually loads.
 
 ---
 
-## 7. Worth doing first
+## 6b. Still shipping, still dead
+
+`(public)/share/[id]` and the eight components under `lib/components/share/`
+are the other half of the account-era app: a public video page with
+reactions, comments, a view counter, a transcript panel and an HLS player.
+Nothing links to it, and every one of them fetches `/api/share/...`, which
+does not exist in a static desktop build.
+
+It was left in place rather than deleted with the auth code because it is a
+coherent feature someone might want back, not a stray page. But it is ~30 KB
+of the bundle doing nothing, and it should either be wired to something real
+or removed.
+
+---
+
+## 7. Installer size
 
 `.deb` installers are ~61 MB because the bundled ffmpeg and ffprobe are ~80 MB
 each before compression. Dropping ffprobe from `BINARIES` in
-`apps/desktop/scripts/fetch-ffmpeg.mjs` roughly halves that; the only cost is
-the accurate metadata probe, which `ffmpeg -i` can approximate.
+`apps/desktop/scripts/fetch-ffmpeg.mjs` roughly halves that.
+
+**This looks worse than it did.** The note used to say the only cost was an
+approximate probe. Since then the width and height ffprobe reports became
+load-bearing: they are what lets a reopened project stream-copy instead of
+re-encoding. `ffmpeg -i` prints the same numbers, but as free text whose shape
+varies by build and codec, and a misparse there does not fail loudly — it
+silently costs minutes per export. Worth doing, but it needs the parser to be
+tested against real output from several containers first, not written from
+memory of the format.

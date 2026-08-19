@@ -44,7 +44,10 @@ export const SHORTCUTS: Shortcut[] = [
 	{ key: 'v', modifiers: [], label: 'V', description: 'Select tool', category: 'tools', action: 'tool.select' },
 	{ key: 'c', modifiers: [], label: 'C', description: 'Razor / cut tool', category: 'tools', action: 'tool.razor' },
 	{ key: 't', modifiers: [], label: 'T', description: 'Add text overlay', category: 'tools', action: 'text.add' },
-	{ key: 'm', modifiers: [], label: 'M', description: 'Add marker', category: 'tools', action: 'marker.add' },
+	{ key: 'm', modifiers: [], label: 'M', description: 'Add marker at playhead', category: 'tools', action: 'marker.add' },
+	{ key: 'm', modifiers: ['shift'], label: 'Shift+M', description: 'Remove marker at playhead', category: 'tools', action: 'marker.remove' },
+	{ key: 'ArrowLeft', modifiers: ['alt'], label: 'Alt+Left', description: 'Previous marker', category: 'tools', action: 'marker.prev' },
+	{ key: 'ArrowRight', modifiers: ['alt'], label: 'Alt+Right', description: 'Next marker', category: 'tools', action: 'marker.next' },
 
 	// Timeline (continued)
 	{ key: 'g', modifiers: ['ctrl'], label: 'Ctrl+G', description: 'Group selected clips', category: 'timeline', action: 'timeline.group' },

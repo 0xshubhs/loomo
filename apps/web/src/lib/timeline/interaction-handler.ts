@@ -1,4 +1,4 @@
-import type { Track, Clip } from '$lib/types/index.js';
+import type { Track, Clip, Marker } from '$lib/types/index.js';
 import { getClipAtPosition, getSnapPoints, findNearestSnap, getTrackIndexFromY } from './timeline-engine.js';
 
 export type DragMode = 'none' | 'move' | 'trim-start' | 'trim-end' | 'playhead' | 'select';
@@ -102,7 +102,8 @@ export function handleMouseMove(
 	pixelsPerSecond: number,
 	scrollX: number,
 	snapEnabled: boolean,
-	snapThreshold: number = 0.1
+	snapThreshold: number = 0.1,
+	markers: Marker[] = []
 ): DragState {
 	if (dragState.mode === 'none') return dragState;
 
@@ -116,7 +117,7 @@ export function handleMouseMove(
 
 	if (dragState.mode === 'move' && dragState.clipId && snapEnabled) {
 		const newStart = dragState.startTime + deltaTime;
-		const snapPoints = getSnapPoints(tracks, dragState.clipId);
+		const snapPoints = getSnapPoints(tracks, dragState.clipId, markers);
 		const snap = findNearestSnap(newStart, snapPoints, snapThreshold);
 		if (snap.snapped) snapTime = snap.time;
 	}

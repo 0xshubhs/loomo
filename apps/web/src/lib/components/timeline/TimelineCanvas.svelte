@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { getTimeline, getPlayback, getUI, getSelection, getCommands, getMediaLibrary } from '$lib/state/context.js';
+	import { getTimeline, getPlayback, getUI, getSelection, getCommands, getMediaLibrary, getProject } from '$lib/state/context.js';
 	import { TimelineRenderer } from '$lib/timeline/timeline-renderer.js';
 	import { handleMouseDown, handleMouseMove, createDragState, getCursorForPosition, type DragState } from '$lib/timeline/interaction-handler.js';
 	import { calculateZoom } from '$lib/timeline/zoom-controller.js';
@@ -21,18 +21,21 @@
 	import { formatDuration } from '$lib/utils/time.js';
 	import { getTrackIndexFromY } from '$lib/timeline/timeline-engine.js';
 	import { generateId } from '$lib/utils/id.js';
-	import type { Clip } from '$lib/types/index.js';
+	import { addMarker, removeMarker, renameMarker, markerAt } from '$lib/timeline/markers.js';
+	import type { Clip, Marker } from '$lib/types/index.js';
 	import { createClip } from '$lib/types/timeline.js';
 
 	const timeline = getTimeline();
 	const playback = getPlayback();
 	const ui = getUI();
+	const project = getProject();
 	const selection = getSelection();
 	const commands = getCommands();
 	const mediaLibrary = getMediaLibrary();
 
 	let contextMenu = $state<{ x: number; y: number; items: MenuEntry[] } | null>(null);
 	let hoveredClipId: string | null = null;
+	let renamingMarker = $state<{ id: string; value: string } | null>(null);
 
 	let canvasEl: HTMLCanvasElement;
 	let renderer: TimelineRenderer;
@@ -79,6 +82,7 @@
 			duration: timeline.totalDuration,
 			snapLine: dragState.snapTime,
 			hoveredClipId,
+			markers: timeline.markers,
 		});
 	}
 
@@ -138,7 +142,10 @@
 			return;
 		}
 
-		dragState = handleMouseMove(e, dragState, timeline.tracks, ui.pixelsPerSecond, ui.timelineScrollX, ui.snapEnabled);
+		dragState = handleMouseMove(
+			e, dragState, timeline.tracks, ui.pixelsPerSecond,
+			ui.timelineScrollX, ui.snapEnabled, undefined, timeline.markers
+		);
 
 		if (dragState.mode === 'playhead') {
 			const rect = canvasEl.getBoundingClientRect();
@@ -234,6 +241,45 @@
 	}
 
 	/**
+	 * How near a click has to be to count as landing on a marker.
+	 *
+	 * Derived from the zoom so the target stays the same size on screen at
+	 * every scale.
+	 */
+	function markerTolerance(): number {
+		return 6 / Math.max(1, ui.pixelsPerSecond);
+	}
+
+	/**
+	 * Opens the inline rename box over a marker.
+	 *
+	 * Inline rather than `prompt()`: a native modal dialog freezes the whole
+	 * WebKitGTK webview until it is dismissed, which on this platform has
+	 * meant a wedged window more than once.
+	 */
+	function startRenamingMarker(marker: Marker) {
+		renamingMarker = { id: marker.id, value: marker.label };
+	}
+
+	function commitMarkerRename() {
+		if (!renamingMarker) return;
+		const { id, value } = renamingMarker;
+		renamingMarker = null;
+		if (!value.trim()) return;
+
+		timeline.markers = renameMarker(timeline.markers, id, value.trim());
+		project.markDirty();
+		updateRenderer();
+	}
+
+	/** Where the rename box sits, following the marker as the timeline scrolls. */
+	let renameLeft = $derived.by(() => {
+		const marker = timeline.markers.find((m) => m.id === renamingMarker?.id);
+		if (!marker) return 0;
+		return marker.time * ui.pixelsPerSecond - ui.timelineScrollX;
+	});
+
+	/**
 	 * Builds the right-click menu for whatever is under the cursor: a clip, a
 	 * gap between clips, or empty track space.
 	 */
@@ -250,6 +296,53 @@
 		);
 		const track = timeline.tracks[trackIndex];
 		const items: MenuEntry[] = [];
+
+		// The ruler is where markers live, so that is where they are managed.
+		if (y < renderer.rulerHeight) {
+			const existing = markerAt(timeline.markers, time, markerTolerance());
+
+			if (existing) {
+				items.push(
+					{ label: `Go to "${existing.label}"`, action: () => playback.seek(existing.time) },
+					{ label: 'Rename marker…', action: () => startRenamingMarker(existing) },
+					'separator',
+					{
+						label: 'Remove marker',
+						danger: true,
+						action: () => {
+							timeline.markers = removeMarker(timeline.markers, existing.id);
+							project.markDirty();
+							updateRenderer();
+						},
+					}
+				);
+			} else {
+				items.push({
+					label: 'Add marker here',
+					shortcut: 'M',
+					action: () => {
+						timeline.markers = addMarker(timeline.markers, time);
+						project.markDirty();
+						updateRenderer();
+					},
+				});
+			}
+
+			if (timeline.markers.length > 0) {
+				items.push('separator', {
+					label: `Clear all markers (${timeline.markers.length})`,
+					danger: true,
+					action: () => {
+						timeline.markers = [];
+						project.markDirty();
+						updateRenderer();
+					},
+				});
+			}
+
+			contextMenu = { x: e.clientX, y: e.clientY, items };
+			return;
+		}
 
 		if (track) {
 			const clip = clipAt(track, time);
@@ -359,6 +452,22 @@
 	class="timeline-canvas"
 ></canvas>
 
+{#if renamingMarker}
+	<!-- svelte-ignore a11y_autofocus -->
+	<input
+		class="marker-rename"
+		style="left: {renameLeft}px"
+		bind:value={renamingMarker.value}
+		autofocus
+		onblur={commitMarkerRename}
+		onkeydown={(e) => {
+			e.stopPropagation();
+			if (e.key === 'Enter') commitMarkerRename();
+			if (e.key === 'Escape') renamingMarker = null;
+		}}
+	/>
+{/if}
+
 {#if contextMenu}
 	<ContextMenu
 		x={contextMenu.x}
@@ -373,5 +482,18 @@
 		width: 100%;
 		height: 100%;
 		display: block;
+	}
+
+	.marker-rename {
+		position: absolute;
+		top: 4px;
+		width: 120px;
+		padding: 1px 4px;
+		border: 1px solid var(--accent-primary, #ff5f45);
+		border-radius: 3px;
+		background: #000;
+		color: var(--text-primary, #fff);
+		font-size: 10px;
+		z-index: 20;
 	}
 </style>

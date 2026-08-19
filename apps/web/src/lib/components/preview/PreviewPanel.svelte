@@ -15,6 +15,9 @@
 	import { NativePreviewStream, nativeFrameAt } from '$lib/engine/native-preview.js';
 	import TransportControls from './TransportControls.svelte';
 	import AnnotationLayer from './AnnotationLayer.svelte';
+	import { visibleLayers, overlayLayers, baseLayer, layerRect, type PreviewLayer } from '$lib/playback/preview-composite.js';
+	import { OverlayFrameCache } from '$lib/playback/overlay-frames.js';
+	import { audioBedClips, diffBed, bedSourceTime } from '$lib/playback/preview-mixer.js';
 	import type { Clip } from '$lib/types/index.js';
 
 	interface Props {
@@ -54,6 +57,73 @@
 	let lastNativeBitmap: ImageBitmap | null = null;
 	let nativeScrubToken = 0;
 
+	/**
+	 * Frames for every layer above the base clip.
+	 *
+	 * Decoded by the bundled ffmpeg, the same way the base is. Overlays are
+	 * drawn small, so 640px wide is more than the canvas can show.
+	 */
+	const overlayFrames = new OverlayFrameCache(nativeFrameAt);
+	const OVERLAY_DECODE_WIDTH = 640;
+
+	/**
+	 * One player per audio-track clip currently sounding.
+	 *
+	 * The export mixes every audio track into the render; the preview used to
+	 * play only the base clip, so a music bed was in the file and not in the
+	 * editor. Each bed clip gets its own player because they overlap by
+	 * design — that is what a bed is.
+	 */
+	const bedPlayers = new Map<string, NativeAudioPlayer>();
+
+	/**
+	 * Starts and stops bed players to match the playhead.
+	 *
+	 * Clips already sounding are left running: restarting one every frame
+	 * would stutter the music it exists to play.
+	 */
+	async function syncAudioBed(): Promise<void> {
+		if (!ffmpeg || !playback.playing) return;
+
+		const wanted = audioBedClips(timeline.tracks, playback.currentTime);
+		const { start, stop } = diffBed(bedPlayers.keys(), wanted);
+
+		for (const clipId of stop) {
+			bedPlayers.get(clipId)?.stop();
+			bedPlayers.delete(clipId);
+		}
+
+		for (const bed of start) {
+			const scratchName = nativeScratchName(bed.clip);
+			const asset = mediaLibrary.getAssetById(bed.clip.assetId);
+			if (!scratchName || !asset) continue;
+
+			// Claim the slot before awaiting, so a second pass through the
+			// loop does not start the same clip twice.
+			const player = new NativeAudioPlayer();
+			bedPlayers.set(bed.clip.id, player);
+
+			const buffer = await loadClipAudio(ffmpeg, asset.id, scratchName);
+			// The playhead may have left this clip while the decode ran.
+			if (!buffer || bedPlayers.get(bed.clip.id) !== player || !playback.playing) {
+				bedPlayers.delete(bed.clip.id);
+				continue;
+			}
+
+			player.start(
+				buffer,
+				bedSourceTime(bed.clip, playback.currentTime),
+				bed.clip.speed * playback.playbackRate,
+				bed.volume * playback.outputVolume
+			);
+		}
+	}
+
+	function stopAudioBed(): void {
+		for (const player of bedPlayers.values()) player.stop();
+		bedPlayers.clear();
+	}
+
 	function nativeScratchName(clip: Clip): string | null {
 		if (!isDesktop()) return null;
 		const asset = mediaLibrary.getAssetById(clip.assetId);
@@ -62,6 +132,12 @@
 
 	async function startNative(clip: Clip): Promise<void> {
 		const name = nativeScratchName(clip);
+		// A still has one frame; the overlay canvas draws it. Running an
+		// MJPEG stream for it would decode the same picture 30 times a second.
+		if (clip.type === 'image') {
+			await stopNative();
+			return;
+		}
 		if (!name || clip.reversed) {
 			await stopNative();
 			return;
@@ -174,6 +250,8 @@
 		stopLoop();
 		videoEl?.pause();
 		void stopNative();
+		stopAudioBed();
+		overlayFrames.clear();
 	});
 
 	// ── Helpers ─────────────────────────────────────────────────────
@@ -196,8 +274,36 @@
 	function getClipVolume(clip: Clip): number {
 		const track = timeline.tracks.find((t) => t.clips.some((c) => c.id === clip.id));
 		if (track?.muted || clip.muted) return 0;
-		return Math.max(0, Math.min(1, (track?.volume ?? 1) * clip.volume));
+		// The master level multiplies the mix rather than replacing it, so
+		// muting does not lose the per-track balance underneath it.
+		const mix = (track?.volume ?? 1) * clip.volume * playback.outputVolume;
+		return Math.max(0, Math.min(1, mix));
 	}
+
+	// Muting has to take effect on the clip that is already playing, not on
+	// the next one: the whole point of the shortcut is to silence what is
+	// audible right now.
+	$effect(() => {
+		const level = playback.outputVolume;
+
+		// Untracked: this effect exists to respond to the master level
+		// changing, not to run sixty times a second because the playhead
+		// moved. Reading the clock reactively here would make it do both.
+		untrack(() => {
+			// Bed players carry the master level too, or muting would silence
+			// the base clip and leave the music playing.
+			for (const bed of audioBedClips(timeline.tracks, playback.currentTime)) {
+				bedPlayers.get(bed.clip.id)?.setVolume(bed.volume * level);
+			}
+
+			const clip = findActiveClip();
+			if (!clip) return;
+
+			const target = getClipVolume(clip);
+			if (nativeAudioActive) nativeAudio.setVolume(target);
+			else if (videoEl) videoEl.volume = target;
+		});
+	});
 
 	/** Calculate the source time for a clip, accounting for reverse playback. */
 	function getSourceTime(clip: Clip, timelineTime: number): number {
@@ -213,6 +319,21 @@
 		if (!videoEl) return false;
 		const asset = mediaLibrary.getAssetById(clip.assetId);
 		if (!asset) return false;
+
+		// A still has no video stream. Loading its blob into the element only
+		// produces a decode error, and leaving the previous clip's src in
+		// place would show that frame around the edges of a letterboxed
+		// image. The overlay canvas is what draws it.
+		if (clip.type === 'image') {
+			if (activeAssetId !== null) {
+				videoEl.pause();
+				videoEl.removeAttribute('src');
+				videoEl.load();
+				activeAssetId = null;
+			}
+			activeClipId = clip.id;
+			return true;
+		}
 
 		// Only change src if different asset
 		if (activeAssetId !== clip.assetId) {
@@ -425,6 +546,7 @@
 			stopLoop();
 			videoEl?.pause();
 			void stopNative();
+			stopAudioBed();
 			return;
 		}
 
@@ -444,21 +566,8 @@
 		} else {
 			videoEl.playbackRate = clip.speed * playback.playbackRate;
 			// This play() call is in direct click context — guaranteed to work
-			videoEl.play().then(() => {
-				// Log every input to getClipVolume, not just the result — a
-				// silent 0 was observed in the field with no visible cause.
-				const track = timeline.tracks.find((t) => t.clips.some((c) => c.id === clip.id));
-				console.log('[MEOW] Audio playing:', {
-					muted: videoEl.muted,
-					volume: videoEl.volume,
-					trackFound: !!track,
-					trackMuted: track?.muted,
-					trackVolume: track?.volume,
-					clipMuted: clip.muted,
-					clipVolume: clip.volume,
-				});
-			}).catch((err) => {
-				console.error('[MEOW] Play failed:', err.name, err.message);
+			videoEl.play().catch((err) => {
+				console.warn('[preview] play failed:', err.name, err.message);
 			});
 		}
 
@@ -466,6 +575,7 @@
 		startLoop();
 		void startNative(clip);
 		void startNativeAudio(clip);
+		void syncAudioBed();
 	}
 
 	// ── RAF Loop ────────────────────────────────────────────────────
@@ -511,6 +621,10 @@
 				return;
 			}
 		}
+
+		// Audio tracks run independently of the base clip's boundaries, so the
+		// bed is reconciled every frame rather than only on a clip change.
+		void syncAudioBed();
 
 		// 3. Clip boundary transition
 		const clip = findActiveClip();
@@ -606,6 +720,7 @@
 			stopLoop();
 			videoEl.pause();
 			void stopNative();
+			stopAudioBed();
 		}
 	});
 
@@ -688,6 +803,37 @@
 		}
 	});
 
+	/** Paints one composited layer, if a frame for it is available yet. */
+	function drawLayer(
+		ctx: CanvasRenderingContext2D,
+		layer: PreviewLayer,
+		frameWidth: number,
+		frameHeight: number
+	): void {
+		const scratchName = nativeScratchName(layer.clip);
+		if (!scratchName) return;
+
+		const frame = overlayFrames.get(
+			{
+				clip: layer.clip,
+				scratchName,
+				sourceTime: getSourceTime(layer.clip, playback.currentTime),
+				width: OVERLAY_DECODE_WIDTH,
+				still: layer.clip.type === 'image',
+			},
+			// The decode lands after this paint; repaint so it is not held
+			// back until the next frame the playhead happens to need.
+			() => drawTextOverlays()
+		);
+		if (!frame) return;
+
+		const rect = layerRect(layer.clip, frameWidth, frameHeight, frame.width, frame.height);
+		const previous = ctx.globalAlpha;
+		ctx.globalAlpha = layer.opacity;
+		ctx.drawImage(frame, rect.x, rect.y, rect.width, rect.height);
+		ctx.globalAlpha = previous;
+	}
+
 	// ── Overlay canvas ──────────────────────────────────────────────
 
 	function resizeOverlay() {
@@ -701,6 +847,16 @@
 		resizeChromaCanvas();
 	}
 
+	/**
+	 * Draws every layer above the base clip, then the text and shape overlays.
+	 *
+	 * The base clip is painted by the video element and the native stream
+	 * underneath this canvas; anything on a higher video track is drawn here,
+	 * in the same order and the same geometry the export composites it. A
+	 * still image on the base track is drawn here too — the video element
+	 * cannot show one, which is why an image on the timeline used to preview
+	 * as nothing at all.
+	 */
 	function drawTextOverlays() {
 		if (!overlayCanvas) return;
 		const ctx = overlayCanvas.getContext('2d');
@@ -709,6 +865,20 @@
 
 		const w = overlayCanvas.width / dpr;
 		const h = overlayCanvas.height / dpr;
+
+		const layers = visibleLayers(timeline.tracks, playback.currentTime);
+		const base = baseLayer(layers);
+		const toDraw = overlayLayers(layers);
+		// The video element shows video; a still on the base track has nothing
+		// showing it, so it is drawn here as well.
+		if (base && base.clip.type === 'image') toDraw.unshift(base);
+
+		if (toDraw.length > 0) {
+			ctx.save();
+			ctx.scale(dpr, dpr);
+			for (const layer of toDraw) drawLayer(ctx, layer, w, h);
+			ctx.restore();
+		}
 
 		if (timeline.textOverlays.length > 0) {
 			ctx.save();

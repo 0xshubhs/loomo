@@ -58,6 +58,9 @@
 		flex: 1;
 		min-width: 0;
 		overflow: hidden;
+		/* The canvas draws markers; the rename box has to sit on top of one,
+		   which means positioning against this box rather than the page. */
+		position: relative;
 	}
 
 	.empty-tracks {

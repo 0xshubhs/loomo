@@ -1,16 +1,18 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy, untrack } from 'svelte';
 	import { getTimeline, getPlayback, getMediaLibrary, getUI, getSelection, getCommands, getCaptions, getProject } from '$lib/state/context.js';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { isDesktop } from '$lib/desktop/env.js';
 	import { openProject, saveProject } from '$lib/project/store.js';
+	import { createAutosave } from '$lib/project/autosave.js';
 	import { ProjectFormatError } from '$lib/project/document.js';
 	import { createFFmpegEngine } from '$lib/engine/ffmpeg-engine.js';
 	import { importMediaFile } from '$lib/engine/media-import.js';
 	import { exportTimeline } from '$lib/engine/export-pipeline.js';
 	import { saveOutput } from '$lib/desktop/save.js';
 	import { matchShortcut } from '$lib/utils/keyboard.js';
+	import { addMarker, removeMarker, markerAt, nextMarker, previousMarker } from '$lib/timeline/markers.js';
 	import { SplitClipCommand, RemoveClipCommand, PasteClipsCommand, DuplicateClipsCommand, RemoveGapsCommand } from '$lib/commands/clip-commands.js';
 	import { AddTextOverlayCommand } from '$lib/commands/text-commands.js';
 	import { GroupClipsCommand, UngroupClipsCommand } from '$lib/commands/group-commands.js';
@@ -46,8 +48,69 @@
 	let showShortcuts = $state(false);
 	let showSavePrompt = $state(false);
 	let saveError = $state<string | null>(null);
+	/**
+	 * Assets that opened without their media, or that a save could not copy.
+	 *
+	 * Kept as a dismissible banner rather than a toast: a clip with no bytes
+	 * behind it is a problem the user has to act on, and a message that
+	 * disappears after four seconds is a message they will meet again at
+	 * export time instead.
+	 */
+	let missingMedia = $state<string[]>([]);
 
 	const project = getProject();
+
+	/** Roughly one write per half-minute of continuous editing. */
+	const AUTOSAVE_DELAY_MS = 30_000;
+
+	const autosave = createAutosave({
+		delayMs: AUTOSAVE_DELAY_MS,
+		save: () => saveCurrentProject({ quiet: true }),
+		canSave: () =>
+			isDesktop() &&
+			project.dirty &&
+			!project.saving &&
+			// An untouched editor is not a project. Saving one would leave an
+			// empty entry in the library every time someone opened the editor
+			// and changed their mind.
+			(mediaLibrary.assets.length > 0 || timeline.tracks.some((t) => t.clips.length > 0)) &&
+			// Copying every clip into the project while ffmpeg is mid-render
+			// would make an export that is already slow noticeably slower.
+			!isExporting(),
+	});
+
+	/**
+	 * How near the playhead has to be to count as "on" a marker.
+	 *
+	 * Measured in seconds but derived from the zoom, so removing a marker means
+	 * the same thing on screen whether the timeline is showing ten seconds or
+	 * ten minutes.
+	 */
+	function markerTolerance(): number {
+		return 6 / Math.max(1, ui.pixelsPerSecond);
+	}
+
+	function isExporting(): boolean {
+		return !!exportProgress && exportProgress.stage !== 'done' && exportProgress.stage !== 'error';
+	}
+
+	/**
+	 * Every timeline edit makes the project dirty.
+	 *
+	 * Until this existed, `markDirty` was called only by the project-name field
+	 * and the aspect-ratio picker — so trimming, splitting, deleting and
+	 * dragging clips all left the project looking saved. The leave prompt never
+	 * appeared for the case it was written for.
+	 */
+	$effect(() => {
+		if (commands.revision > 0) untrack(() => project.markDirty());
+	});
+
+	// Arms the timer on the first unsaved change. The autosave itself decides
+	// whether the write is worth doing.
+	$effect(() => {
+		if (project.dirty) autosave.noteChange();
+	});
 
 	onMount(async () => {
 		appReady = true;
@@ -81,8 +144,10 @@
 			timeline.textOverlays = opened.document.textOverlays;
 			timeline.shapeOverlays = opened.document.shapeOverlays;
 			timeline.annotations = opened.document.annotations;
+			timeline.markers = opened.document.markers;
 			if (opened.document.captions) captions.captionTrack = opened.document.captions;
 
+			missingMedia = opened.missing;
 			project.name = opened.document.name;
 			project.markSaved(opened.document.savedAt);
 			commands.clear();
@@ -98,17 +163,22 @@
 		}
 	}
 
-	/** Writes the current state to disk, media and all. */
-	async function saveCurrentProject(): Promise<boolean> {
+	/**
+	 * Writes the current state to disk, media and all.
+	 *
+	 * `quiet` is for autosave: it still reports failures, but says nothing on
+	 * success, because a toast every half minute is noise.
+	 */
+	async function saveCurrentProject(options: { quiet?: boolean } = {}): Promise<boolean> {
 		if (!isDesktop()) {
-			saveError = 'Projects are stored on disk and need the desktop app.';
+			if (!options.quiet) saveError = 'Projects are stored on disk and need the desktop app.';
 			return false;
 		}
 
 		project.saving = true;
 		saveError = null;
 		try {
-			await saveProject(
+			const saved = await saveProject(
 				{
 					name: project.name,
 					assets: mediaLibrary.assets,
@@ -117,14 +187,18 @@
 					textOverlays: timeline.textOverlays,
 					shapeOverlays: timeline.shapeOverlays,
 					annotations: timeline.annotations,
+					markers: timeline.markers,
 					captions: captions.captionTrack ?? null,
 					aspectRatio: project.aspectRatio.label,
 				},
 				{ id: project.id, now: Date.now() }
 			);
 			project.markSaved(Date.now());
-			importStatus = 'Project saved';
-			setTimeout(() => { importStatus = null; }, 4000);
+			if (saved.skipped.length > 0) missingMedia = saved.skipped;
+			if (!options.quiet) {
+				importStatus = 'Project saved';
+				setTimeout(() => { importStatus = null; }, 4000);
+			}
 			return true;
 		} catch (err) {
 			console.error('Save failed:', err);
@@ -155,6 +229,7 @@
 	}
 
 	onDestroy(() => {
+		autosave.cancel();
 		ffmpeg.terminate();
 		mediaLibrary.clear();
 	});
@@ -171,6 +246,9 @@
 			try {
 				const asset = await importMediaFile(files[i], ffmpeg);
 				mediaLibrary.addAsset(asset);
+				// Imported media belongs to the project even before it is
+				// placed, so it has to be saved with it.
+				project.markDirty();
 				console.info(`[import] added "${asset.name}" — library now has ${mediaLibrary.assets.length}`);
 
 				// Auto-create track if none exist
@@ -208,7 +286,15 @@
 					if (!asset) return undefined;
 					// scratchName lets the export reuse the copy import already
 					// staged, instead of pushing the file through memory again.
-					return { file: asset.file, name: asset.name, scratchName: asset.scratchName };
+					return {
+						file: asset.file,
+						name: asset.name,
+						scratchName: asset.scratchName,
+						// A reopened project's File is a placeholder; these are
+						// the dimensions read at import.
+						width: asset.metadata.width,
+						height: asset.metadata.height,
+					};
 				},
 				timeline.shapeOverlays,
 				captions.captionTrack,
@@ -384,7 +470,35 @@
 				}
 				break;
 			}
-			case 'marker.add': break;
+			case 'marker.add': {
+				const next = addMarker(timeline.markers, playback.currentTime);
+				// Unchanged means there was already one here — pressing M twice
+				// on a frame is a slip, and marking the project dirty for it
+				// would be a lie.
+				if (next !== timeline.markers) {
+					timeline.markers = next;
+					project.markDirty();
+				}
+				break;
+			}
+			case 'marker.remove': {
+				const existing = markerAt(timeline.markers, playback.currentTime, markerTolerance());
+				if (existing) {
+					timeline.markers = removeMarker(timeline.markers, existing.id);
+					project.markDirty();
+				}
+				break;
+			}
+			case 'marker.next': {
+				const target = nextMarker(timeline.markers, playback.currentTime);
+				if (target) playback.seek(target.time);
+				break;
+			}
+			case 'marker.prev': {
+				const target = previousMarker(timeline.markers, playback.currentTime);
+				if (target) playback.seek(target.time);
+				break;
+			}
 			case 'shortcuts.show': showShortcuts = true; break;
 			case 'project.save': void saveCurrentProject(); break;
 			case 'export.open': ui.showExportDialog = true; break;
@@ -392,7 +506,7 @@
 			case 'preview.fullscreen':
 				ui.previewFullscreen = !ui.previewFullscreen;
 				break;
-			case 'audio.toggleMute': break;
+			case 'audio.toggleMute': playback.toggleMute(); break;
 			case 'import.open': openFileDialog(); break;
 			case 'timeline.group':
 				if (selection.selectedClipIds.size >= 2) {
@@ -441,8 +555,8 @@
 {#if !appReady}
 	<div class="loading-screen">
 		<div class="loading-content">
-			<h1>MEOW</h1>
-			<p>Loading editor...</p>
+			<h1>Loomo</h1>
+			<p>Loading editor…</p>
 		</div>
 	</div>
 {:else}
@@ -451,6 +565,17 @@
 		<div class="notification warning">
 			<span>{ffmpegError}</span>
 			<button onclick={() => ffmpegError = null}>&times;</button>
+		</div>
+	{/if}
+
+	{#if missingMedia.length > 0}
+		<div class="notification warning">
+			<span>
+				Media is missing for {missingMedia.length === 1 ? '1 clip' : `${missingMedia.length} clips`}:
+				{missingMedia.slice(0, 3).join(', ')}{missingMedia.length > 3 ? '…' : ''}.
+				Those clips will be empty until the files are imported again.
+			</span>
+			<button onclick={() => missingMedia = []}>&times;</button>
 		</div>
 	{/if}
 
@@ -519,8 +644,9 @@
 	<ShortcutsModal bind:open={showShortcuts} />
 
 	{#if showSavePrompt}
-		<!-- Leaving with unsaved work is the one place the editor must not be
-		     quiet: there is no autosave, so closing without this loses the edit. -->
+		<!-- Autosave runs every half minute, so at worst this covers the last
+		     thirty seconds — but "Don't save" has to stay an explicit choice
+		     rather than something the editor decides for the user. -->
 		<div class="prompt-backdrop">
 			<div class="prompt">
 				<h3>Save this project?</h3>

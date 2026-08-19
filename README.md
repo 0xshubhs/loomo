@@ -78,7 +78,15 @@ imported — the copy happens in Rust, straight from the scratch directory the
 import already wrote, so nothing large passes through JavaScript in either
 direction.
 
-Leaving the editor with unsaved changes asks first. There is no autosave.
+Autosave writes about every half minute of continuous editing — throttled
+from the first unsaved change rather than debounced, so a long session is the
+case it fires in rather than the case it never reaches. It skips an untouched
+editor, so backing out of "New project" leaves nothing behind. Leaving with
+unsaved changes still asks: "Don't save" has to stay an explicit choice.
+
+Waveforms and markers are saved with the project. Media that cannot be found
+when a project opens is named in the editor rather than logged to a console
+nobody is reading.
 
 ### Editing
 Multi-track timeline, trim, split, transitions, 12 filter presets plus 8
@@ -90,9 +98,18 @@ tracks are composited over the base render — an image held over the opening
 seconds appears exactly where it was placed, and a music bed is mixed in
 rather than dropped.
 
+**Images work on the main track too.** A still is looped into a real video
+stream at the export frame rate and given a silent audio track, so a title
+card sitting before the footage holds for its full length and concatenates
+with clips that have sound.
+
 **Clip speed** — presets from 0.25x to 4x plus a slider. Changing speed
 retimes the clip and ripples the rest of the track, and the panel shows the
 resulting timeline duration, so a 76s clip at 1.5x reads as 51s.
+
+**Markers** — `M` drops a named point at the playhead, `Shift+M` removes one,
+`Alt+←`/`Alt+→` walk between them. Clips snap to them, so a cut can be marked
+while watching and made afterwards. Right-click the ruler to rename.
 
 **Keyframes** — nine animatable properties (position X/Y, scale, rotation,
 opacity, volume, brightness, contrast, saturation) with five easings.
@@ -172,12 +189,23 @@ twice. A miniature FFmpeg-expression evaluator in the tests asserts the two
 agree; without it they drift and the only symptom is an export that quietly
 differs from what you approved.
 
+Multi-track compositing is the same story. Audio too: the export mixes every
+audio track, and the preview used to play only the base clip, so a music bed
+was in the file and not in the editor. The preview used to paint the
+first video track's active clip and nothing else, while the export
+composited every other track on top — so an image held over the opening
+seconds previewed as nothing and exported correctly, which is the worst way
+round. The preview now draws the layers above the base onto its overlay
+canvas, in the same order, and the pixel geometry comes from the same
+`overlayGeometry` the filtergraph uses rather than from a second
+implementation of it.
+
 ---
 
 ## Testing
 
 ```bash
-cd apps/web && bun run test     # ~785 tests
+cd apps/web && bun run test     # ~908 tests
 cd apps/web && bun run check    # typecheck, expects 0 errors
 cd apps/desktop/src-tauri && cargo test
 ```
@@ -209,6 +237,18 @@ the webview and swallows the file drop before the page's HTML5 `drop` fires.
 **Native `<select>` ignores CSS `color` on GTK.** Without `appearance: none`
 every dropdown renders unreadable.
 
+**Nothing marked the project dirty on an edit.** `markDirty` was reached only
+by the project-name field and the aspect-ratio picker, so trimming, splitting
+and dragging clips all left the project looking saved — the leave prompt never
+appeared for the case it exists for. The command manager carries a `revision`
+counter now, because stack lengths cannot stand in for it: undoing back to an
+empty stack is still a project that differs from the file.
+
+**`.svelte.ts` modules need the Svelte plugin to be testable.** Without it a
+runes state class throws `$state is not defined` the moment a test constructs
+one, which is why none of the stores had tests. `vitest.config.ts` loads the
+plugin now.
+
 **A wasm constraint applied to the native engine is the recurring bug.** The
 export refused a 474 MB file (ffmpeg.wasm's heap limit), encoded 4K with
 `-preset ultrafast -threads 1 -b:v 5000k` (chosen to keep that heap small),
@@ -216,9 +256,21 @@ and rebuilt every source in webview memory. None of it applies to a real
 binary. `FFmpegEngine` now declares `maxInputBytes` and `persistentStore`,
 and the pipeline asks rather than assumes.
 
+**`-t` shortens an input; it cannot extend one.** `ffmpeg -i photo.png -t 10`
+is one frame, not ten seconds. A still needs `-loop 1 -framerate <fps> -t
+<duration>`, and a silent `anullsrc` alongside it — an image input has no
+audio stream, so `[n:a]` is a graph error rather than silence.
+
 **`Clip.opacity` runs 0–1; `ClipFilters.opacity` runs 0–100.** Same codebase.
 Reading the first as a percentage drew every composited overlay at 1% alpha,
 which is indistinguishable from compositing not happening.
+
+**A reopened project's `File` is empty on purpose.** Its bytes stay on disk —
+materialising a gigabyte to satisfy the type would defeat the point — but
+probing that placeholder for a resolution returned zeros, "unknown" meant
+"scale anyway", and every export from a reopened project took the re-encode
+path instead of a stream copy. Correct output, minutes of work for a copy.
+The dimensions recorded at import travel with the asset now.
 
 **`amix` defaults to `normalize=1`,** which divides every input by the input
 count — adding one music track halves the original audio.

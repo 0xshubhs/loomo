@@ -197,16 +197,43 @@ export function buildCompositeFilter(
 	return { filter: parts.join(';'), videoLabel, audioLabel };
 }
 
-/** Where an overlay sits, honouring a picture-in-picture position if one is set. */
-function geometryFor(clip: Clip, width: number, height: number) {
+/**
+ * The box an overlay is scaled into, in pixels.
+ *
+ * Exported because the preview draws the same overlays on a canvas and the two
+ * must agree: an overlay that previews centred and exports in the corner is
+ * worse than one that does neither. Position is a percentage of the frame, so
+ * this is the single place it is turned into pixels.
+ */
+export interface OverlayGeometry {
+	width: number;
+	height: number;
+	x: number;
+	y: number;
+	/** True when no PiP position is set and the overlay fills the frame. */
+	full: boolean;
+}
+
+export function overlayGeometry(clip: Clip, width: number, height: number): OverlayGeometry {
 	const position = clip.position ?? DEFAULT_CLIP_POSITION;
 	if (!hasNonDefaultPosition(position)) {
-		return { width, height, x: '(W-w)/2', y: '(H-h)/2' };
+		return { width, height, x: 0, y: 0, full: true };
 	}
 	return {
 		width: Math.round((width * position.width) / 100),
 		height: Math.round((height * position.height) / 100),
-		x: String(Math.round((width * position.x) / 100)),
-		y: String(Math.round((height * position.y) / 100)),
+		x: Math.round((width * position.x) / 100),
+		y: Math.round((height * position.y) / 100),
+		full: false,
 	};
+}
+
+/** The same box as ffmpeg expressions, centring when no position is set. */
+function geometryFor(clip: Clip, width: number, height: number) {
+	const box = overlayGeometry(clip, width, height);
+	// `(W-w)/2` rather than 0: a full-frame overlay is scaled with
+	// force_original_aspect_ratio, so a differently shaped source ends up
+	// smaller than the frame and has to be centred in it.
+	if (box.full) return { width: box.width, height: box.height, x: '(W-w)/2', y: '(H-h)/2' };
+	return { width: box.width, height: box.height, x: String(box.x), y: String(box.y) };
 }

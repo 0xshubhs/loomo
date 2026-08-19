@@ -6,7 +6,6 @@ import { PlaybackStore } from './playback.svelte.js';
 import { UIStore } from './ui.svelte.js';
 import { SelectionStore } from './selection.svelte.js';
 import { CommandManager } from '$lib/commands/command-manager.svelte.js';
-import { AuthStore } from './auth.svelte.js';
 import { CaptionStore } from './captions.svelte.js';
 
 const KEYS = {
@@ -17,7 +16,6 @@ const KEYS = {
 	ui: Symbol('ui'),
 	selection: Symbol('selection'),
 	commands: Symbol('commands'),
-	auth: Symbol('auth'),
 	captions: Symbol('captions'),
 } as const;
 
@@ -79,18 +77,3 @@ export function getCaptions(): CaptionStore {
 	return getContext(KEYS.captions);
 }
 
-export interface AppContext {
-	auth: AuthStore;
-}
-
-export function createAppContext(): AppContext {
-	const auth = new AuthStore();
-
-	setContext(KEYS.auth, auth);
-
-	return { auth };
-}
-
-export function getAuth(): AuthStore {
-	return getContext(KEYS.auth);
-}

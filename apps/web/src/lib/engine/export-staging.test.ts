@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { exportTimeline, type ExportResult } from './export-pipeline.js';
+import {
+	exportTimeline,
+	clipInputArgs,
+	graphInputArgs,
+	silentInputArgs,
+	hasStillClips,
+	type ExportResult,
+} from './export-pipeline.js';
 import type { FFmpegEngine, OperationCallback } from './ffmpeg-engine.js';
 import { createClip } from '$lib/types/timeline.js';
 import type { Clip, Track } from '$lib/types/timeline.js';
@@ -128,7 +135,7 @@ function clip(over: Partial<Clip> = {}): Clip {
 
 function run(
 	engine: FFmpegEngine,
-	asset: { file: File; name: string; scratchName?: string },
+	asset: { file: File; name: string; scratchName?: string; width?: number; height?: number },
 	clips: Clip[] = [clip()]
 ): Promise<ExportResult> {
 	return exportTimeline(
@@ -280,5 +287,135 @@ describe('multi-clip exports', () => {
 
 		expect(engine.writes.filter((w) => w.path.startsWith('src_'))).toEqual([]);
 		expect(engine.deletes).not.toContain('media_abc.mp4');
+	});
+});
+
+describe('choosing a strategy for a reopened project', () => {
+	/**
+	 * A reopened project holds an empty `File` — its bytes are on disk, and
+	 * materialising them to read a width would defeat the point of keeping
+	 * them there. The pipeline used to probe that placeholder, get nothing,
+	 * and re-encode every export as a result: correct output, minutes of work
+	 * for a copy that should have been instant.
+	 */
+	function placeholder(): File {
+		return new File([], 'source.mp4', { type: 'video/mp4' });
+	}
+
+	function copied(engine: FakeEngine): boolean {
+		return engine.execArgs.some((args) => args.includes('copy'));
+	}
+
+	it('stream-copies when the known dimensions already match the target', async () => {
+		const engine = new FakeEngine(null, true, new Set(['media_a1.mp4']));
+
+		await run(engine, {
+			file: placeholder(),
+			name: 'source.mp4',
+			scratchName: 'media_a1.mp4',
+			width: 1920,
+			height: 1080,
+		});
+
+		expect(copied(engine)).toBe(true);
+	});
+
+	it('re-encodes when the known dimensions differ from the target', async () => {
+		const engine = new FakeEngine(null, true, new Set(['media_a1.mp4']));
+
+		await run(engine, {
+			file: placeholder(),
+			name: 'source.mp4',
+			scratchName: 'media_a1.mp4',
+			width: 3840,
+			height: 2160,
+		});
+
+		expect(copied(engine)).toBe(false);
+	});
+
+	it('still re-encodes when nothing is known about the source', async () => {
+		// Unknown must not be read as "already matches": stream-copying on a
+		// failed probe hands back the source resolution instead of the one
+		// that was asked for.
+		const engine = new FakeEngine(null, true, new Set(['media_a1.mp4']));
+
+		await run(engine, { file: placeholder(), name: 'source.mp4', scratchName: 'media_a1.mp4' });
+
+		expect(copied(engine)).toBe(false);
+	});
+
+	it('treats zero dimensions as unknown rather than as a match', async () => {
+		const engine = new FakeEngine(null, true, new Set(['media_a1.mp4']));
+
+		await run(engine, {
+			file: placeholder(),
+			name: 'source.mp4',
+			scratchName: 'media_a1.mp4',
+			width: 0,
+			height: 0,
+		});
+
+		expect(copied(engine)).toBe(false);
+	});
+});
+
+describe('input flags for a still', () => {
+	/**
+	 * `-i photo.png -t 10` yields one frame: `-t` shortens an input, it cannot
+	 * extend one. A still has to be looped at a frame rate and then bounded.
+	 */
+	function still(duration = 10): Clip {
+		return clip({ id: 'img', name: 'card.png', type: 'image', assetId: 'asset-img', duration });
+	}
+
+	it('loops an image for the length of the clip', () => {
+		expect(clipInputArgs(still(10), 'card.png', 30)).toEqual([
+			'-loop', '1', '-framerate', '30', '-t', '10', '-i', 'card.png',
+		]);
+	});
+
+	it('takes the frame rate from the export config', () => {
+		expect(clipInputArgs(still(), 'card.png', 60)).toContain('60');
+	});
+
+	it('leaves a video clip seeking and trimming as before', () => {
+		const trimmed = clip({ sourceStart: 2, duration: 5 });
+
+		expect(clipInputArgs(trimmed, 'source.mp4', 30)).toEqual([
+			'-ss', '2', '-i', 'source.mp4', '-t', '5',
+		]);
+	});
+
+	it('does not seek a video clip that starts at zero', () => {
+		expect(clipInputArgs(clip({ duration: 5 }), 'source.mp4', 30)).toEqual([
+			'-i', 'source.mp4', '-t', '5',
+		]);
+	});
+
+	it('still bounds a looped image in the graph strategy', () => {
+		// `-loop 1` with no `-t` is an input that never ends.
+		expect(graphInputArgs(still(4), 'card.png', 24)).toEqual([
+			'-loop', '1', '-framerate', '24', '-t', '4', '-i', 'card.png',
+		]);
+	});
+
+	it('leaves trimming to the graph for a video clip', () => {
+		const trimmed = clip({ sourceStart: 2, duration: 5 });
+
+		expect(graphInputArgs(trimmed, 'source.mp4', 30)).toEqual(['-i', 'source.mp4']);
+	});
+
+	it('manufactures silence the length of the clip', () => {
+		// An image input has no audio stream, so [n:a] is a graph error rather
+		// than silence, and concat with a clip that has audio fails.
+		expect(silentInputArgs(3)).toEqual([
+			'-f', 'lavfi', '-t', '3', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
+		]);
+	});
+
+	it('reports whether a timeline holds a still, which rules out stream copy', () => {
+		expect(hasStillClips([clip({})])).toBe(false);
+		expect(hasStillClips([clip({}), still()])).toBe(true);
 	});
 });

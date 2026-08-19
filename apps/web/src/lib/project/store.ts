@@ -4,6 +4,7 @@ import { generateId } from '$lib/utils/id.js';
 import type { MediaAsset } from '$lib/types/media.js';
 import {
 	buildDocument,
+	decodeWaveform,
 	documentDuration,
 	parseDocument,
 	storedFilename,
@@ -24,6 +25,14 @@ import {
 export interface SaveResult {
 	id: string;
 	meta: LocalProjectMeta;
+	/**
+	 * Assets whose media could not be copied into the project.
+	 *
+	 * The save still goes through — losing one clip beats losing the edit —
+	 * but the caller has to tell the user, because the next open will be
+	 * missing them.
+	 */
+	skipped: string[];
 }
 
 /** Saves the editor's current state, creating the project if it is new. */
@@ -40,9 +49,11 @@ export async function saveProject(
 	// Media first: a document that names a file which was never copied would
 	// open to an empty timeline.
 	const stored = new Map<string, string>();
+	const skipped: string[] = [];
 	for (const asset of snapshot.assets) {
 		const filename = await adoptMedia(id, asset);
 		if (filename) stored.set(asset.id, filename);
+		else skipped.push(asset.name);
 	}
 
 	const document = buildDocument(snapshot, stored, options.now);
@@ -51,7 +62,7 @@ export async function saveProject(
 		thumbnail: snapshot.assets[0]?.thumbnails[0] ?? null,
 	});
 
-	return { id, meta };
+	return { id, meta, skipped };
 }
 
 /**
@@ -89,6 +100,14 @@ export interface OpenedProject {
 	document: ProjectDocument;
 	/** Assets rebuilt with their media staged and ready for ffmpeg. */
 	assets: MediaAsset[];
+	/**
+	 * Names of assets whose media could not be staged.
+	 *
+	 * The project still opens — the timeline and every edit survive — but these
+	 * clips have no bytes behind them, and the caller is expected to say so
+	 * rather than let the user discover it at export time.
+	 */
+	missing: string[];
 }
 
 /** Reads a project back and stages its media for playback and export. */
@@ -99,6 +118,7 @@ export async function openProject(id: string): Promise<OpenedProject> {
 
 	const document = parseDocument(await localProjects.load(id));
 	const assets: MediaAsset[] = [];
+	const missing: string[] = [];
 
 	for (const stored of document.assets) {
 		const scratchName = `media_${stored.id}${extensionOf(stored.file)}`;
@@ -107,6 +127,7 @@ export async function openProject(id: string): Promise<OpenedProject> {
 			staged = await localProjects.stageMedia(id, stored.file, scratchName);
 		} catch (error) {
 			console.warn(`[project] media for "${stored.name}" is missing:`, error);
+			missing.push(stored.name);
 		}
 
 		assets.push({
@@ -120,13 +141,13 @@ export async function openProject(id: string): Promise<OpenedProject> {
 			type: stored.type,
 			metadata: stored.metadata,
 			thumbnails: stored.thumbnails,
-			waveform: null,
+			waveform: decodeWaveform(stored.waveform),
 			addedAt: document.savedAt,
 			scratchName: staged,
 		});
 	}
 
-	return { id, document, assets };
+	return { id, document, assets, missing };
 }
 
 function extensionOf(filename: string): string {
