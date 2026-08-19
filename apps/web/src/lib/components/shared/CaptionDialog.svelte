@@ -4,10 +4,19 @@
 	import { transcribeAudio, isSpeechRecognitionSupported, SUPPORTED_LANGUAGES } from '$lib/engine/speech-recognition.js';
 	import { downloadSRT } from '$lib/utils/srt.js';
 	import type { CaptionSegment, CaptionStyle } from '$lib/types/index.js';
+	import { assetBlob } from '$lib/engine/asset-bytes.js';
+	import type { FFmpegEngine } from '$lib/engine/ffmpeg-engine.js';
 	import Modal from './Modal.svelte';
 	import Button from './Button.svelte';
 	import Dropdown from './Dropdown.svelte';
 	import Slider from './Slider.svelte';
+
+	interface Props {
+		/** Needed to read an asset whose bytes live on disk rather than in the page. */
+		ffmpeg?: FFmpegEngine;
+	}
+
+	let { ffmpeg }: Props = $props();
 
 	const captions = getCaptions();
 	const timeline = getTimeline();
@@ -92,9 +101,10 @@
 		abortController = new AbortController();
 
 		try {
-			// Fetch the blob from the asset URL
-			const response = await fetch(asset.blobUrl);
-			const audioBlob = await response.blob();
+			// Not `fetch(asset.blobUrl)`: an asset picked through the OS
+			// dialog or reopened from a project has no blob url, because its
+			// bytes never entered the page.
+			const audioBlob = await assetBlob(asset, ffmpeg);
 
 			const segments = await transcribeAudio(
 				audioBlob,

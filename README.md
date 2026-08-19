@@ -205,7 +205,7 @@ implementation of it.
 ## Testing
 
 ```bash
-cd apps/web && bun run test     # ~908 tests
+cd apps/web && bun run test     # ~941 tests
 cd apps/web && bun run check    # typecheck, expects 0 errors
 cd apps/desktop/src-tauri && cargo test
 ```
@@ -220,6 +220,15 @@ when no binary is present.
 
 Every one of these cost real debugging time. They are documented because the
 symptoms point somewhere other than the cause.
+
+**WebKitGTK percent-decodes filenames in `<input type="file">`.** A file
+genuinely named `Members%20Only%20S2.mp4` — which is what a browser download of
+a URL-encoded link leaves on disk — is reported to the page as
+`Members Only S2.mp4`. Nothing exists under that name, so the element returns a
+`File` of **zero bytes with no error**. The import wrote an empty scratch copy
+and ffmpeg said `moov atom not found`, which reads as a corrupt source when the
+source is perfectly fine. The desktop uses the native dialog and imports by
+path; Rust copies the file and the name never round-trips through the webview.
 
 **WebKitGTK does not forward `console.*` to stderr.** Frontend logs are
 invisible from a terminal. Diagnostics route through a Tauri command to

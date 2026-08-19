@@ -108,6 +108,22 @@ Tensor input/output names are guesses until a model actually loads.
 
 ### Fixed since the last pass
 
+- **Import by path, not through the webview.** WebKitGTK's file input
+  percent-decodes the filename it reports; a file actually named
+  `Members%20Only%20S2.mp4` resolved to nothing and the page received a
+  zero-byte `File` with no error anywhere, surfacing minutes later as
+  `moov atom not found`. The desktop now uses the OS dialog, Rust copies from
+  the real path, and probing and thumbnails come from ffprobe and ffmpeg
+  rather than a `<video>` element — the same reason the preview stopped using
+  one. Extensions derived from user filenames are reduced to letters and
+  digits before being concatenated into a path a process opens.
+- **Audio and images were never staged.** Only video got a scratch copy, so
+  a music bed had nothing for the preview mixer to play and an overlay image
+  had nothing to decode. Every type is staged now.
+- **`getExt('recording')` returned `'recording'`.** `split('.').pop()` on a
+  name with no dot returns the whole name, so a file without an extension got
+  a working file named after itself.
+
 - **Markers.** `M` was in the keyboard map and wired to nothing for the whole
   life of the app. Now: add, remove, walk between, rename from the ruler,
   drawn as a flag plus a line down the tracks, snapped to when dragging

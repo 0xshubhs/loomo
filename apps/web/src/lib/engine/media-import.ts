@@ -2,6 +2,125 @@ import type { MediaAsset, MediaMetadata } from '$lib/types/index.js';
 import type { FFmpegEngine } from './ffmpeg-engine.js';
 import { generateId } from '$lib/utils/id.js';
 import { getFileType } from '$lib/utils/file.js';
+import { basename, scratchExtension, typeFromPath, stagePickedFile, type PickedFile } from '$lib/desktop/pick.js';
+import { nativeFrameAt } from './native-preview.js';
+
+/**
+ * Imports a file the OS dialog picked, by path.
+ *
+ * Nothing about this route goes through the webview: not the bytes, not the
+ * name, not the decode. WebKitGTK's file input percent-decodes filenames, so a
+ * name containing a literal `%20` — an ordinary result of downloading a
+ * URL-encoded link — resolved to nothing on disk and the page received a
+ * zero-byte `File`. The import dutifully wrote an empty scratch copy and
+ * ffmpeg said "moov atom not found", which reads as a corrupt source when the
+ * source is perfectly fine.
+ *
+ * Probing is ffprobe and thumbnails are ffmpeg decodes, for the same reason
+ * the preview stopped using `<video>`: on this platform the element is not
+ * something correctness can rest on.
+ */
+export async function importMediaFromPath(
+	picked: PickedFile,
+	ffmpeg: FFmpegEngine
+): Promise<MediaAsset> {
+	const id = generateId();
+	const type = typeFromPath(picked.path);
+	const name = picked.name || basename(picked.path);
+	console.info(`[import] "${name}" from path, type=${type}`);
+
+	if (type === 'unknown') throw new Error(`Unsupported file type: ${name}`);
+
+	const scratchName = `media_${id}${scratchExtension(picked.path)}`;
+	const size = await stagePickedFile(picked.path, scratchName);
+	console.info(`[import] staged "${scratchName}" (${size} bytes)`);
+
+	const metadata = await probeStaged(ffmpeg, scratchName, type, size);
+	const thumbnails =
+		type === 'video' ? await nativeThumbnails(scratchName, metadata.duration, 6) : [];
+
+	return {
+		id,
+		name,
+		// The bytes stay on disk. Everything downstream works from
+		// `scratchName`; materialising the file here to satisfy the type would
+		// undo the point of never letting it into the page.
+		file: new File([], name),
+		blobUrl: '',
+		type,
+		metadata,
+		thumbnails,
+		waveform: null,
+		addedAt: Date.now(),
+		scratchName,
+	};
+}
+
+/** Reads a staged file's metadata with ffprobe, falling back to sane defaults. */
+async function probeStaged(
+	ffmpeg: FFmpegEngine,
+	scratchName: string,
+	type: 'video' | 'audio' | 'image',
+	size: number
+): Promise<MediaMetadata> {
+	const metadata: MediaMetadata = { ...emptyMetadata(), fileSize: size };
+
+	if (!ffmpeg.probe) return type === 'image' ? { ...metadata, duration: 5 } : metadata;
+
+	try {
+		const probed = await ffmpeg.probe(scratchName);
+		metadata.width = probed.width;
+		metadata.height = probed.height;
+		metadata.codec = probed.codec;
+		metadata.audioCodec = probed.audioCodec;
+		metadata.bitrate = probed.bitrate;
+		if (probed.fps > 0) metadata.fps = probed.fps;
+		// A still reports no duration; five seconds is the length it is placed
+		// at, the same as every other import route gives it.
+		metadata.duration = type === 'image' ? 5 : probed.duration;
+	} catch (error) {
+		console.warn(`[import] probe failed for "${scratchName}":`, error);
+		if (type === 'image') metadata.duration = 5;
+	}
+
+	return metadata;
+}
+
+/**
+ * Filmstrip thumbnails, decoded by the bundled ffmpeg.
+ *
+ * A failed thumbnail is cosmetic — the clip still imports without one — so a
+ * decode that comes back empty is skipped rather than failing the import.
+ */
+async function nativeThumbnails(
+	scratchName: string,
+	duration: number,
+	count: number
+): Promise<string[]> {
+	if (duration <= 0) return [];
+
+	const thumbnails: string[] = [];
+	const canvas = document.createElement('canvas');
+	canvas.width = 160;
+	canvas.height = 90;
+	const ctx = canvas.getContext('2d');
+	if (!ctx) return [];
+
+	for (let i = 0; i < count; i++) {
+		// Never exactly 0 or exactly the end: both are common places for a
+		// decoder to return nothing.
+		const at = Math.min(Math.max(0.1, (i * duration) / count), Math.max(0.1, duration - 0.1));
+		const frame = await nativeFrameAt(scratchName, at, 160);
+		if (!frame) continue;
+
+		ctx.clearRect(0, 0, canvas.width, canvas.height);
+		ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+		frame.close();
+		thumbnails.push(canvas.toDataURL('image/jpeg', 0.6));
+	}
+
+	return thumbnails;
+}
 
 export async function importMediaFile(
 	file: File,
@@ -13,6 +132,18 @@ export async function importMediaFile(
 	// without this the only symptom is that nothing appears in the library.
 	console.info(`[import] "${file.name}" type=${type} size=${file.size} mime=${file.type || 'none'}`);
 	if (type === 'unknown') throw new Error(`Unsupported file type: ${file.name}`);
+
+	// A zero-byte File is not a zero-byte file. WebKitGTK percent-decodes the
+	// name it was given, and when nothing exists under the decoded name it
+	// returns an empty File rather than an error — so the only symptom used to
+	// be ffmpeg reporting "moov atom not found" on a source that is fine.
+	if (file.size === 0) {
+		throw new Error(
+			`"${file.name}" came through empty. This happens when the filename contains characters ` +
+				`the webview rewrites, such as %20. Use the Import button, which asks the system for ` +
+				`the file by path instead.`
+		);
+	}
 
 	let blobUrl = URL.createObjectURL(file);
 	let metadata: MediaMetadata;
@@ -69,15 +200,20 @@ export async function importMediaFile(
 	// On the desktop, stage a copy in the scratch directory so the bundled
 	// ffmpeg can decode preview frames directly from disk. Streamed in chunks;
 	// failure only disables the native preview path, never the import.
+	//
+	// Every type, not just video: an audio clip needs its staged copy for the
+	// preview mixer to play it, and a still needs one for the export to loop
+	// it. Staging video alone meant a music bed was silent in the editor and
+	// an overlay image had nothing to decode.
 	let scratchName: string | undefined;
-	if (type !== 'video') {
-		// nothing to stage
-	} else if (!ffmpeg.writeFileStreaming) {
+	if (!ffmpeg.writeFileStreaming) {
 		console.warn('[import] engine has no streaming write — native preview disabled');
 	} else {
 		const started = performance.now();
 		try {
-			scratchName = `media_${id}${getExtFromName(usedFile.name)}`;
+			// Sanitised: this is concatenated into a path ffmpeg then opens, and
+			// the name it comes from is whatever the user called their file.
+			scratchName = `media_${id}${scratchExtension(usedFile.name)}`;
 			console.info(`[import] staging "${scratchName}" (${usedFile.size} bytes) for native preview`);
 			await ffmpeg.writeFileStreaming(scratchName, usedFile);
 			console.info(`[import] staged in ${Math.round(performance.now() - started)}ms`);
@@ -207,7 +343,7 @@ async function transcodeToH264(
 		);
 	}
 
-	const inputName = 'transcode_input' + getExtFromName(file.name);
+	const inputName = 'transcode_input' + scratchExtension(file.name);
 	const outputName = 'transcode_output.mp4';
 
 	// Stream the source in when the engine allows it. Reading a large video
@@ -259,11 +395,6 @@ async function transcodeToH264(
 			? probeResult.metadata
 			: { ...emptyMetadata(), fileSize: blob.size },
 	};
-}
-
-function getExtFromName(name: string): string {
-	const dot = name.lastIndexOf('.');
-	return dot >= 0 ? name.slice(dot) : '';
 }
 
 function emptyMetadata(): MediaMetadata {

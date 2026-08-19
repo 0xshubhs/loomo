@@ -62,6 +62,7 @@ pub fn run() {
             scratch::scratch_path,
             scratch::scratch_size,
             scratch::scratch_export,
+            scratch::scratch_import,
             scratch::diag_log,
             scratch::diag_log_path,
             ffmpeg::ffmpeg_init,

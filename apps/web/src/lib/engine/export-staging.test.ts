@@ -5,6 +5,7 @@ import {
 	graphInputArgs,
 	silentInputArgs,
 	hasStillClips,
+	getExt,
 	type ExportResult,
 } from './export-pipeline.js';
 import type { FFmpegEngine, OperationCallback } from './ffmpeg-engine.js';
@@ -417,5 +418,44 @@ describe('input flags for a still', () => {
 	it('reports whether a timeline holds a still, which rules out stream copy', () => {
 		expect(hasStillClips([clip({})])).toBe(false);
 		expect(hasStillClips([clip({}), still()])).toBe(true);
+	});
+});
+
+describe('naming working files from a user filename', () => {
+	/**
+	 * These become paths handed to a process. Real filenames are not tame:
+	 * spaces, quotes, percent escapes, and the odd newline all turn up.
+	 */
+	it('keeps an ordinary extension', () => {
+		expect(getExt('holiday.mp4')).toBe('mp4');
+		expect(getExt('holiday.MKV')).toBe('mkv');
+	});
+
+	it('strips anything that is not a letter or digit', () => {
+		expect(getExt('clip.m p4')).toBe('mp4');
+		expect(getExt("clip.mp'4")).toBe('mp4');
+		expect(getExt('clip.mp4\n')).toBe('mp4');
+	});
+
+	it('handles a name with several dots', () => {
+		expect(getExt('Members Only S2 Episode 2.Sourav.mp4')).toBe('mp4');
+	});
+
+	it('handles a percent-encoded name', () => {
+		expect(getExt('Members%20Only%20S2.mp4')).toBe('mp4');
+	});
+
+	it('falls back for a file with no extension', () => {
+		expect(getExt('recording')).toBe('mp4');
+	});
+
+	it('falls back when the extension is only punctuation', () => {
+		// Otherwise the working file is named `src_0.` — or worse, `src_0.-f`,
+		// which ffmpeg reads as an option.
+		expect(getExt('clip.--')).toBe('mp4');
+	});
+
+	it('caps a preposterous extension', () => {
+		expect(getExt(`clip.${'x'.repeat(200)}`)).toBe('x'.repeat(8));
 	});
 });

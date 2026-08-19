@@ -186,6 +186,36 @@ pub fn diag_log_path(app: tauri::AppHandle) -> Result<String, String> {
     Ok(dir.join("diagnostics.log").to_string_lossy().into_owned())
 }
 
+/// Copies a file the user picked into scratch, by path.
+///
+/// The webview never sees the bytes and never sees the name. WebKitGTK's file
+/// input hands the page a `File` whose name has been percent-decoded, and when
+/// the real filename contains a literal `%20` there is nothing on disk by the
+/// decoded name — so it returns an empty `File` and the import writes a
+/// zero-byte scratch copy that ffmpeg reports as "moov atom not found".
+/// Copying from the path the native dialog returned sidesteps the encoding
+/// entirely, and skips three copies of the file through IPC while it is there.
+#[tauri::command]
+pub fn scratch_import(
+    source: String,
+    name: String,
+    scratch: State<'_, Scratch>,
+) -> Result<u64, String> {
+    let target = scratch.resolve(&name)?;
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+
+    let bytes = fs::copy(&source, &target).map_err(|e| format!("copy {source}: {e}"))?;
+    if bytes == 0 {
+        // An empty source is not something to discover minutes later inside a
+        // decode error.
+        let _ = fs::remove_file(&target);
+        return Err(format!("\"{source}\" is empty"));
+    }
+    Ok(bytes)
+}
+
 /// Copies a finished artefact out of scratch to a user-chosen destination.
 #[tauri::command]
 pub fn scratch_export(

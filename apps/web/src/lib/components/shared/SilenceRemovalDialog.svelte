@@ -2,9 +2,18 @@
 	import { getUI, getTimeline, getSelection, getMediaLibrary, getCommands } from '$lib/state/context.js';
 	import { detectSilences, analyzeAudioFromBlob, type SilenceRegion, type SilenceOptions } from '$lib/engine/silence-detector.js';
 	import { RemoveSilencesCommand } from '$lib/commands/clip-commands.js';
+	import { assetBlob } from '$lib/engine/asset-bytes.js';
+	import type { FFmpegEngine } from '$lib/engine/ffmpeg-engine.js';
 	import Modal from './Modal.svelte';
 	import Button from './Button.svelte';
 	import Slider from './Slider.svelte';
+
+	interface Props {
+		/** Needed to read an asset whose bytes live on disk rather than in the page. */
+		ffmpeg?: FFmpegEngine;
+	}
+
+	let { ffmpeg }: Props = $props();
 
 	const ui = getUI();
 	const timeline = getTimeline();
@@ -56,8 +65,9 @@
 
 		try {
 			if (!audioBuffer) {
-				const response = await fetch(asset.blobUrl);
-				const blob = await response.blob();
+				// Not `fetch(asset.blobUrl)`: see assetBlob — an asset whose
+				// bytes live on disk has no blob url to fetch.
+				const blob = await assetBlob(asset, ffmpeg);
 				audioBuffer = await analyzeAudioFromBlob(blob);
 			}
 

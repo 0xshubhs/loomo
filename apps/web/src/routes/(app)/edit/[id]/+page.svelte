@@ -8,7 +8,8 @@
 	import { createAutosave } from '$lib/project/autosave.js';
 	import { ProjectFormatError } from '$lib/project/document.js';
 	import { createFFmpegEngine } from '$lib/engine/ffmpeg-engine.js';
-	import { importMediaFile } from '$lib/engine/media-import.js';
+	import { importMediaFile, importMediaFromPath } from '$lib/engine/media-import.js';
+	import { pickMediaFiles, type PickedFile } from '$lib/desktop/pick.js';
 	import { exportTimeline } from '$lib/engine/export-pipeline.js';
 	import { saveOutput } from '$lib/desktop/save.js';
 	import { matchShortcut } from '$lib/utils/keyboard.js';
@@ -352,7 +353,28 @@
 		importError = null;
 	}
 
-	function openFileDialog() {
+	/**
+	 * Opens the file chooser.
+	 *
+	 * The desktop asks the OS and works from real paths. The webview's own
+	 * `<input type="file">` percent-decodes filenames, so a name holding a
+	 * literal `%20` resolved to nothing on disk and the page got a zero-byte
+	 * `File` with no error — which surfaced minutes later as ffmpeg reporting
+	 * "moov atom not found" on a source that was perfectly fine.
+	 */
+	async function openFileDialog() {
+		if (isDesktop()) {
+			try {
+				const picked = await pickMediaFiles();
+				if (picked.length > 0) await handleImportPaths(picked);
+			} catch (err) {
+				console.error('File picker failed:', err);
+				importError = `Could not open the file picker: ${err}`;
+				setTimeout(() => { importError = null; }, 8000);
+			}
+			return;
+		}
+
 		const input = document.createElement('input');
 		input.type = 'file';
 		input.accept = 'video/*,audio/*,image/*,.mkv,.avi,.mov,.flv,.wmv,.ts,.mts';
@@ -361,6 +383,39 @@
 			if (input.files) handleImport(Array.from(input.files));
 		};
 		input.click();
+	}
+
+	/** Imports files chosen by the native dialog, which hands back paths. */
+	async function handleImportPaths(picked: PickedFile[]) {
+		mediaLibrary.importing = true;
+		importError = null;
+		const errors: string[] = [];
+
+		for (let i = 0; i < picked.length; i++) {
+			mediaLibrary.importProgress = (i + 0.5) / picked.length;
+			importStatus = `Importing ${picked[i].name}... (${i + 1}/${picked.length})`;
+
+			try {
+				const asset = await importMediaFromPath(picked[i], ffmpeg);
+				mediaLibrary.addAsset(asset);
+				project.markDirty();
+				if (timeline.tracks.length === 0) {
+					timeline.addTrack(asset.type === 'audio' ? 'audio' : 'video');
+				}
+			} catch (err) {
+				console.error(`Failed to import ${picked[i].name}:`, err);
+				errors.push(`${picked[i].name}: ${err}`);
+			}
+		}
+
+		mediaLibrary.importing = false;
+		mediaLibrary.importProgress = 0;
+		importStatus = null;
+
+		if (errors.length > 0) {
+			importError = `Failed to import: ${errors.join(', ')}`;
+			setTimeout(() => { importError = null; }, 12000);
+		}
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
@@ -507,7 +562,7 @@
 				ui.previewFullscreen = !ui.previewFullscreen;
 				break;
 			case 'audio.toggleMute': playback.toggleMute(); break;
-			case 'import.open': openFileDialog(); break;
+			case 'import.open': void openFileDialog(); break;
 			case 'timeline.group':
 				if (selection.selectedClipIds.size >= 2) {
 					commands.execute(new GroupClipsCommand(timeline, selection.selectedClipIds));
@@ -608,7 +663,7 @@
 	<EditorLayout>
 		{#snippet topbar()}
 			<TopBar
-				onimport={openFileDialog}
+				onimport={() => void openFileDialog()}
 				onnewproject={handleNewProject}
 				onshortcuts={() => showShortcuts = true}
 				onsave={() => void saveCurrentProject()}
@@ -617,7 +672,10 @@
 		{/snippet}
 
 		{#snippet mediaBrowser()}
-			<MediaBrowser onimport={handleImport} />
+			<MediaBrowser
+				onimport={handleImport}
+				onbrowse={isDesktop() ? () => void openFileDialog() : undefined}
+			/>
 		{/snippet}
 
 		{#snippet preview()}
@@ -659,8 +717,8 @@
 			</div>
 		</div>
 	{/if}
-	<CaptionDialog />
-	<SilenceRemovalDialog />
+	<CaptionDialog {ffmpeg} />
+	<SilenceRemovalDialog {ffmpeg} />
 	<VoiceoverDialog />
 {/if}
 

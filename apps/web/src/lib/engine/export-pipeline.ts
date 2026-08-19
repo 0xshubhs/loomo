@@ -1785,8 +1785,22 @@ async function prepareInput(
 	return { path: fallbackPath, disposable: true };
 }
 
-function getExt(filename: string): string {
-	return filename.split('.').pop()?.toLowerCase() || 'mp4';
+/**
+ * Extension for a scratch working file, reduced to something inert.
+ *
+ * The name it comes from is the user's, and real filenames carry spaces,
+ * quotes, percent escapes and occasionally a newline. This gets concatenated
+ * into a path that is then handed to a process, and a leading dash would be
+ * read as an option rather than a filename.
+ */
+export function getExt(filename: string): string {
+	// `split('.').pop()` on a name with no dot returns the whole name, so a
+	// file called "recording" was given the extension "recording".
+	const dot = filename.lastIndexOf('.');
+	if (dot <= 0) return 'mp4';
+
+	const raw = filename.slice(dot + 1).toLowerCase().replace(/[^a-z0-9]/g, '');
+	return raw.slice(0, 8) || 'mp4';
 }
 
 async function writeAssetFile(ffmpeg: FFmpegEngine, path: string, file: File): Promise<void> {

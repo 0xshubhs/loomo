@@ -3,9 +3,18 @@
 
 	interface Props {
 		onfiles?: (files: File[]) => void;
+		/**
+		 * Opens the OS file chooser, when there is one.
+		 *
+		 * On the desktop this replaces the `<input type="file">` entirely:
+		 * WebKitGTK percent-decodes the filename it reports, so a name holding
+		 * a literal `%20` matched nothing on disk and the element returned a
+		 * zero-byte `File` without raising anything.
+		 */
+		onbrowse?: () => void;
 	}
 
-	let { onfiles }: Props = $props();
+	let { onfiles, onbrowse }: Props = $props();
 
 	let dragOver = $state(false);
 	let fileInput: HTMLInputElement;
@@ -32,6 +41,16 @@
 
 		const usable = incoming.filter(isMediaFile);
 		const skipped = incoming.filter((f) => !isMediaFile(f));
+
+		// A drop can hand over a file the webview cannot actually read. Saying
+		// so here beats letting it reach ffmpeg and come back as a decode
+		// error about the source being corrupt.
+		const empty = usable.filter((f) => f.size === 0);
+		if (empty.length > 0 && onbrowse) {
+			rejected =
+				`${empty.map((f) => f.name).join(', ')} came through empty — ` +
+				`click to pick ${empty.length === 1 ? 'it' : 'them'} from disk instead.`;
+		}
 
 		console.info(
 			`[import] ${source}: ${incoming.length} file(s), ${usable.length} usable`,
@@ -76,7 +95,12 @@
 	}
 
 	function handleClick() {
-		console.info('[import] opening file picker');
+		if (onbrowse) {
+			console.info('[import] opening native file picker');
+			onbrowse();
+			return;
+		}
+		console.info('[import] opening webview file picker');
 		fileInput.click();
 	}
 

@@ -16,9 +16,11 @@
 
 	interface Props {
 		onimport?: (files: File[]) => void;
+		/** Opens the OS file chooser, on platforms that have one. */
+		onbrowse?: () => void;
 	}
 
-	let { onimport }: Props = $props();
+	let { onimport, onbrowse }: Props = $props();
 
 	function handleRemove(id: string) {
 		mediaLibrary.removeAsset(id);
@@ -89,7 +91,7 @@
 			</div>
 		{/if}
 
-		<ImportDropZone onfiles={onimport} />
+		<ImportDropZone onfiles={onimport} {onbrowse} />
 
 		<div class="asset-grid">
 			{#each mediaLibrary.assets as asset (asset.id)}
