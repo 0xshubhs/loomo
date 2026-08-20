@@ -110,6 +110,11 @@ Tensor input/output names are guesses until a model actually loads.
 
 ### Fixed since the last pass
 
+- **Clips had no bounds.** Dragging one left from the start ran its
+  `timelineStart` negative and it kept going; the trim handles could seek
+  before the beginning of the media, extend past its end, or reduce a clip to
+  a negative length. None of it was clamped anywhere.
+
 - **Preview audio decoded whole clips.** ~40 MB/minute, so a 50-minute source
   reached ~2.5 GB and the app was OOM-killed mid-import. It reads 30-second
   windows now, holding two.

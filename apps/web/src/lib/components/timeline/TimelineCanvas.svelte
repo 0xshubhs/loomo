@@ -22,6 +22,7 @@
 	import { getTrackIndexFromY } from '$lib/timeline/timeline-engine.js';
 	import { generateId } from '$lib/utils/id.js';
 	import { addMarker, removeMarker, renameMarker, markerAt } from '$lib/timeline/markers.js';
+	import { clampMoveDelta, clampTrimDelta, isMeaningfulDelta } from '$lib/timeline/clip-bounds.js';
 	import type { Clip, Marker } from '$lib/types/index.js';
 	import { createClip } from '$lib/types/timeline.js';
 
@@ -160,16 +161,26 @@
 			const deltaX = dragState.currentX - dragState.startX;
 			const deltaTime = deltaX / ui.pixelsPerSecond;
 			if (Math.abs(deltaTime) > 0.01) {
-				const newStart = dragState.snapTime ?? dragState.startTime + deltaTime;
 				const movedClip = timeline.getClipById(dragState.clipId);
-				commands.execute(new MoveClipCommand(timeline, dragState.clipId, newStart));
-				// Move all other clips in the same group by the same delta
-				if (movedClip?.groupId) {
-					const groupClips = timeline.getGroupClips(movedClip.groupId);
-					const actualDelta = newStart - dragState.startTime;
-					for (const gc of groupClips) {
+				const requested = (dragState.snapTime ?? dragState.startTime + deltaTime) - dragState.startTime;
+
+				// Everything moving has to be clamped together. Clamping each
+				// clip on its own would stop the leftmost at zero and let the
+				// rest keep sliding, which tears a group apart.
+				const moving = movedClip?.groupId
+					? timeline.getGroupClips(movedClip.groupId)
+					: movedClip
+						? [movedClip]
+						: [];
+				const delta = clampMoveDelta(requested, moving.map((c) => c.timelineStart));
+
+				if (isMeaningfulDelta(delta)) {
+					commands.execute(
+						new MoveClipCommand(timeline, dragState.clipId, dragState.startTime + delta)
+					);
+					for (const gc of moving) {
 						if (gc.id !== dragState.clipId) {
-							commands.execute(new MoveClipCommand(timeline, gc.id, gc.timelineStart + actualDelta));
+							commands.execute(new MoveClipCommand(timeline, gc.id, gc.timelineStart + delta));
 						}
 					}
 				}
@@ -179,7 +190,18 @@
 			const deltaTime = deltaX / ui.pixelsPerSecond;
 			if (Math.abs(deltaTime) > 0.01) {
 				const edge = dragState.mode === 'trim-start' ? 'start' : 'end';
-				commands.execute(new TrimClipCommand(timeline, dragState.clipId, edge, deltaTime));
+				const trimmed = timeline.getClipById(dragState.clipId);
+				// The source's own length bounds the end handle; without it a
+				// clip can be stretched past the last frame it has.
+				const sourceDuration = trimmed
+					? mediaLibrary.getAssetById(trimmed.assetId)?.metadata.duration
+					: undefined;
+
+				if (trimmed && isMeaningfulDelta(clampTrimDelta(trimmed, edge, deltaTime, { sourceDuration }))) {
+					commands.execute(
+						new TrimClipCommand(timeline, dragState.clipId, edge, deltaTime, { sourceDuration })
+					);
+				}
 			}
 		}
 

@@ -205,7 +205,7 @@ implementation of it.
 ## Testing
 
 ```bash
-cd apps/web && bun run test     # ~963 tests
+cd apps/web && bun run test     # ~997 tests
 cd apps/web && bun run check    # typecheck, expects 0 errors
 cd apps/desktop/src-tauri && cargo test
 ```
@@ -220,6 +220,18 @@ when no binary is present.
 
 Every one of these cost real debugging time. They are documented because the
 symptoms point somewhere other than the cause.
+
+**A clip had no lower bound on the timeline.** Dragged left from the start it
+kept going, sliding off the left edge and reading as though the clip were
+being cropped — in fact it had a negative `timelineStart`. The trim handles
+were unbounded in both directions too: the start handle would set a negative
+`sourceStart` (ffmpeg cannot seek before the beginning, so it starts at zero
+and everything after is out), and the end handle would run past the last frame
+the media has or trim the clip to a negative length. The rules live in
+`clip-bounds.ts` and are enforced in the commands, not just the drag handler,
+so a keyboard nudge cannot reach somewhere a drag may not. A group is clamped
+as a unit — clamping members individually stops the leftmost at zero and lets
+the rest keep sliding.
 
 **Preview audio is extracted a window at a time.** Decoding a whole clip did
 not survive a real file: a 50-minute source produced a 536 MB WAV, read back

@@ -4,6 +4,7 @@ import { DEFAULT_VIDEO_EFFECT } from '$lib/types/index.js';
 import type { TimelineStore } from '$lib/state/timeline.svelte.js';
 import type { SilenceRegion } from '$lib/engine/silence-detector.js';
 import { generateId } from '$lib/utils/id.js';
+import { clampStart, clampTrimDelta, type TrimLimits } from '$lib/timeline/clip-bounds.js';
 
 export class AddClipCommand implements Command {
 	readonly type = 'add-clip';
@@ -91,7 +92,10 @@ export class MoveClipCommand implements Command {
 
 		this.previousStart = clip.timelineStart;
 		this.previousTrackId = clip.trackId;
-		clip.timelineStart = this.newTimelineStart;
+		// A clip never starts before the timeline does. Enforced here as well
+		// as in the drag handler, so a keyboard nudge or a paste cannot put a
+		// clip somewhere a drag is not allowed to.
+		clip.timelineStart = clampStart(this.newTimelineStart);
 
 		if (this.newTrackId && this.newTrackId !== clip.trackId) {
 			const oldTrack = this.timeline.getClipTrack(this.clipId);
@@ -195,7 +199,9 @@ export class TrimClipCommand implements Command {
 		private timeline: TimelineStore,
 		private clipId: string,
 		private edge: 'start' | 'end',
-		private deltaSeconds: number
+		private deltaSeconds: number,
+		/** The source's own length, when the caller knows it. */
+		private limits: TrimLimits = {}
 	) {
 		this.description = `Trim clip ${edge}`;
 	}
@@ -209,13 +215,19 @@ export class TrimClipCommand implements Command {
 		this.previousSourceStart = clip.sourceStart;
 		this.previousSourceEnd = clip.sourceEnd;
 
+		// Clamped rather than trusted: the start handle would otherwise drag a
+		// clip before the timeline and seek before the beginning of the file,
+		// and the end handle would run past the end of the media or trim the
+		// clip down to a negative length.
+		const delta = clampTrimDelta(clip, this.edge, this.deltaSeconds, this.limits);
+
 		if (this.edge === 'start') {
-			clip.timelineStart += this.deltaSeconds;
-			clip.sourceStart += this.deltaSeconds;
-			clip.duration -= this.deltaSeconds;
+			clip.timelineStart += delta;
+			clip.sourceStart += delta;
+			clip.duration -= delta;
 		} else {
-			clip.duration += this.deltaSeconds;
-			clip.sourceEnd += this.deltaSeconds;
+			clip.duration += delta;
+			clip.sourceEnd += delta;
 		}
 		this.timeline.tracks = [...this.timeline.tracks];
 	}
