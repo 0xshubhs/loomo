@@ -49,7 +49,7 @@ Remaining gaps:
 
 ---
 
-## 3. AI tools — infrastructure done, models not wired
+## 3. AI tools — infrastructure done, models mostly wired
 
 `apps/web/src/lib/ai/` is complete and tested (199 tests): ONNX runtime
 adapter, model registry, download cache with integrity checking, tensor
@@ -90,12 +90,6 @@ Tensor input/output names are guesses until a model actually loads.
 
 ## 5. Known rough edges
 
-- **Mosaic regions** are slider-driven; they should be draggable on the
-  preview. The annotation layer proves that interaction works.
-- **Pitch-preserving speed curves still drift.** `atempo` loses a fixed
-  20–27ms per instance, so a curve with `preservePitch` set accumulates error
-  the resampling path does not have. Correct sync needs a filter that
-  time-stretches exactly, or a final length correction.
 - **Preview audio window fetches are not cancelled.** Scrubbing quickly
   across a long clip queues extractions for windows the playhead has already
   left. They are cheap and the cache bounds memory, but the work is wasted.
@@ -111,6 +105,22 @@ Tensor input/output names are guesses until a model actually loads.
 ---
 
 ### Fixed since the last pass
+
+- **Pitch-preserving speed curves.** Neither `atempo` (20–27ms lost per
+  instance) nor `rubberband` (55–70ms) can hit an exact length — the loss is a
+  window flush at the tail, so no slice size avoids it. Each slice is now fed
+  past its own span and trimmed back, so the surplus is real neighbouring
+  audio rather than silence; the last slice, which has no neighbour to borrow
+  from, is padded instead. Measured on the bundled binary: **0.037ms** out over
+  six seconds, from 192ms.
+- **Mosaic regions are draggable** on the preview — move, eight resize
+  handles, topmost-first hit testing, committed as one undoable command on
+  release rather than one per pointer move.
+- **AI model URLs, checked live rather than assumed.** Background removal
+  works and its digests are now pinned from the real downloads. The x4
+  upscaler pointed at a repository that answers 401 and has been replaced with
+  one that resolves, digest read from its LFS metadata.
+- **`(public)/share/`** and its eight components are gone.
 
 - **Speed-curve audio** followed the mean rate and drifted; it now follows the
   curve slice by slice, verified against real ffmpeg at 0.37ms out over six

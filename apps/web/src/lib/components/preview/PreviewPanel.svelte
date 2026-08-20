@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy, untrack } from 'svelte';
-	import { getPlayback, getTimeline, getMediaLibrary, getProject, getCaptions } from '$lib/state/context.js';
+	import { getPlayback, getTimeline, getMediaLibrary, getProject, getCaptions, getSelection } from '$lib/state/context.js';
 	import { renderTextOverlays, renderCaptions, renderShapeOverlays } from '$lib/engine/preview-renderer.js';
 	import { buildCssFilterString } from '$lib/utils/filter-presets.js';
 	import { applyChromaKey } from '$lib/utils/chroma-key.js';
@@ -22,6 +22,7 @@
 	import { NativePreviewStream, nativeFrameAt } from '$lib/engine/native-preview.js';
 	import TransportControls from './TransportControls.svelte';
 	import AnnotationLayer from './AnnotationLayer.svelte';
+	import MosaicLayer from './MosaicLayer.svelte';
 	import { visibleLayers, overlayLayers, baseLayer, layerRect, type PreviewLayer } from '$lib/playback/preview-composite.js';
 	import { OverlayFrameCache } from '$lib/playback/overlay-frames.js';
 	import { audioBedClips, diffBed, bedSourceTime } from '$lib/playback/preview-mixer.js';
@@ -39,6 +40,7 @@
 	const mediaLibrary = getMediaLibrary();
 	const project = getProject();
 	const captions = getCaptions();
+	const selection = getSelection();
 	const ui = getUI();
 
 	let videoEl: HTMLVideoElement;
@@ -151,6 +153,15 @@
 		for (const entry of bedPlayers.values()) entry.player.stop();
 		bedPlayers.clear();
 	}
+
+	/** Whether the selected clip has any mosaic to drag, so the layer can arm. */
+	const hasMosaicRegions = $derived.by(() => {
+		for (const id of selection.selectedClipIds) {
+			const found = timeline.getClipById(id);
+			if (found?.mosaics?.length) return true;
+		}
+		return false;
+	});
 
 	function nativeScratchName(clip: Clip): string | null {
 		if (!isDesktop()) return null;
@@ -1023,6 +1034,10 @@
 			<canvas class="text-overlay" bind:this={overlayCanvas}></canvas>
 			<!-- Sits above the frame and the overlays; ignores pointer events
 			     entirely until a drawing tool is armed in the panel. -->
+			<!-- Under the annotation layer, and inert unless the properties
+			     panel is open on a clip that actually has regions — otherwise
+			     it would sit over the frame catching clicks for nothing. -->
+			<MosaicLayer active={ui.activePanel === 'properties' && hasMosaicRegions} />
 			<AnnotationLayer
 				tools={ui.annotationTools}
 				onselect={(id) => (ui.selectedAnnotationId = id)}

@@ -51,6 +51,16 @@ export interface ModelSpec {
 	/** One recommended model per purpose, used as the default selection. */
 	readonly recommended: boolean;
 	readonly summary: string;
+	/**
+	 * Whether the weights can actually be fetched.
+	 *
+	 * Two entries here point at repositories that no longer exist and answer
+	 * 401 — checked, not assumed. They are kept rather than deleted because the
+	 * preprocessing they describe is real and tested, and because a spec is
+	 * what a replacement URL slots into. `modelsForPurpose` hides them, so the
+	 * UI never offers a download that cannot succeed.
+	 */
+	readonly available?: boolean;
 }
 
 /**
@@ -64,7 +74,8 @@ export const AI_MODELS: readonly ModelSpec[] = [
 		name: 'U²-Net Lite',
 		purpose: 'background-removal',
 		url: 'https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx',
-		sha256: null,
+		// Hashed from the actual download, not copied from a README.
+		sha256: '309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8',
 		bytes: 4_574_861,
 		licence: 'Apache-2.0',
 		licenceUrl: 'https://github.com/xuebinqin/U-2-Net/blob/master/LICENSE',
@@ -103,8 +114,9 @@ export const AI_MODELS: readonly ModelSpec[] = [
 		name: 'RMBG 1.4',
 		purpose: 'background-removal',
 		url: 'https://huggingface.co/briaai/RMBG-1.4/resolve/main/onnx/model.onnx',
-		sha256: null,
-		bytes: 176_718_216,
+		// Hugging Face publishes the LFS digest as X-Linked-Etag; this is it.
+		sha256: '8cafcf770b06757c4eaced21b1a88e57fd2b66de01b8045f35f01535ba742e0f',
+		bytes: 176_153_355,
 		licence: 'bria-rmbg-1.4 (non-commercial)',
 		licenceUrl: 'https://huggingface.co/briaai/RMBG-1.4',
 		commercialUse: false,
@@ -122,6 +134,9 @@ export const AI_MODELS: readonly ModelSpec[] = [
 		id: 'realesrgan-x2plus',
 		name: 'Real-ESRGAN x2',
 		purpose: 'upscale',
+		// This repository answers 401; no working x2 ONNX was found to replace
+		// it. The x4 model below is live and covers the purpose.
+		available: false,
 		url: 'https://huggingface.co/Xenova/real-esrgan-x2plus/resolve/main/onnx/model.onnx',
 		sha256: null,
 		bytes: 67_166_112,
@@ -136,16 +151,18 @@ export const AI_MODELS: readonly ModelSpec[] = [
 		std: [1, 1, 1],
 		scale: 2,
 		wasmFrameMs: 2600,
-		recommended: true,
+		recommended: false,
 		summary: 'Doubles resolution. Runs tiled, so memory stays flat on large frames.',
 	},
 	{
 		id: 'realesrgan-x4plus',
 		name: 'Real-ESRGAN x4',
 		purpose: 'upscale',
-		url: 'https://huggingface.co/Xenova/real-esrgan-x4plus/resolve/main/onnx/model.onnx',
-		sha256: null,
-		bytes: 67_040_989,
+		// The Xenova repo this used to point at does not exist and answers 401.
+		// This one was checked live and its digest read from the LFS metadata.
+		url: 'https://huggingface.co/imgdesignart/realesrgan-x4-onnx/resolve/main/onnx/model.onnx',
+		sha256: 'fa18ce70de3a55f3149d0cc898d335d2d69fca29edc0692cb362c856b2942c3f',
+		bytes: 67_051_787,
 		licence: 'BSD-3-Clause',
 		licenceUrl: 'https://github.com/xinntao/Real-ESRGAN/blob/master/LICENSE',
 		commercialUse: true,
@@ -155,13 +172,18 @@ export const AI_MODELS: readonly ModelSpec[] = [
 		std: [1, 1, 1],
 		scale: 4,
 		wasmFrameMs: 5200,
-		recommended: false,
+		// The only upscale model with weights that can actually be fetched.
+		recommended: true,
 		summary: 'Quadruples resolution. Slow, and invents detail on already-sharp footage.',
 	},
 	{
 		id: 'siggraph17-colorize',
 		name: 'Colorization (SIGGRAPH 17)',
 		purpose: 'colorize',
+		// This repository answers 401. The only ONNX colorizer found on the hub
+		// is manga-specific, which is not what this tool is for, so colorize
+		// has no working model at all.
+		available: false,
 		url: 'https://huggingface.co/Xenova/colorizer-siggraph17/resolve/main/onnx/model.onnx',
 		sha256: null,
 		bytes: 129_247_232,
@@ -188,6 +210,11 @@ export function getModelSpec(id: string): ModelSpec | null {
 }
 
 export function modelsForPurpose(purpose: ModelPurpose): ModelSpec[] {
+	return AI_MODELS.filter((model) => model.purpose === purpose && model.available !== false);
+}
+
+/** Every registered model, including ones whose weights cannot be fetched. */
+export function allModelsForPurpose(purpose: ModelPurpose): ModelSpec[] {
 	return AI_MODELS.filter((model) => model.purpose === purpose);
 }
 

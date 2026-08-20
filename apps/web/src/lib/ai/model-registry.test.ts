@@ -7,10 +7,20 @@ import {
 	formatModelSize,
 	getModelSpec,
 	modelsForPurpose,
+	allModelsForPurpose,
 	type ModelPurpose,
 } from './model-registry.js';
 
 const PURPOSES: ModelPurpose[] = ['background-removal', 'upscale', 'colorize'];
+
+/**
+ * Purposes that currently have a model anyone can actually download.
+ *
+ * Colorize is absent: its upstream repository answers 401 and no replacement
+ * was found. That is a fact about the world rather than a gap in the code, so
+ * it is stated here instead of quietly weakening the checks below.
+ */
+const DOWNLOADABLE_PURPOSES: ModelPurpose[] = ['background-removal', 'upscale'];
 
 describe('AI_MODELS', () => {
 	it('should have unique ids', () => {
@@ -72,9 +82,26 @@ describe('AI_MODELS', () => {
 });
 
 describe('modelsForPurpose', () => {
-	it('should return at least one model per purpose', () => {
-		for (const purpose of PURPOSES) {
+	it('should return at least one model for every purpose that has one', () => {
+		for (const purpose of DOWNLOADABLE_PURPOSES) {
 			expect(modelsForPurpose(purpose).length).toBeGreaterThan(0);
+		}
+	});
+
+	it('should offer nothing for colorize, whose weights cannot be fetched', () => {
+		// Checked live: the SIGGRAPH-17 repository answers 401, and the only
+		// ONNX colorizer on the hub is manga-specific. Offering a download that
+		// cannot succeed is worse than offering nothing, so the tool has no
+		// model until a working one is found.
+		expect(modelsForPurpose('colorize')).toEqual([]);
+		expect(allModelsForPurpose('colorize').length).toBeGreaterThan(0);
+	});
+
+	it('should hide every model whose weights cannot be fetched', () => {
+		for (const purpose of PURPOSES) {
+			for (const model of modelsForPurpose(purpose)) {
+				expect(model.available, `${model.id} is offered but unavailable`).not.toBe(false);
+			}
 		}
 	});
 
@@ -88,8 +115,8 @@ describe('modelsForPurpose', () => {
 });
 
 describe('defaultModelForPurpose', () => {
-	it('should resolve exactly one recommended model per purpose', () => {
-		for (const purpose of PURPOSES) {
+	it('should resolve exactly one recommended model per usable purpose', () => {
+		for (const purpose of DOWNLOADABLE_PURPOSES) {
 			const recommended = modelsForPurpose(purpose).filter((model) => model.recommended);
 			expect(recommended).toHaveLength(1);
 			expect(defaultModelForPurpose(purpose).id).toBe(recommended[0].id);

@@ -535,6 +535,18 @@ export function buildAtempoChain(rate: number): string[] {
 }
 
 /**
+ * Extra output time fed into a pitch-preserving stretch to cover its tail loss.
+ *
+ * `atempo` drops a fixed 20–27ms per instance and `rubberband` 55–70ms, both
+ * at the end and both regardless of input length — a window flush. Feeding the
+ * slice past its own span and trimming the result back means the surplus is
+ * real neighbouring audio rather than silence, and the output lands on its
+ * exact length. Measured: 0.200000s and 1.000000s against those targets, from
+ * 0.179524s and 0.972585s uncorrected.
+ */
+const STRETCH_OVERHANG_SECONDS = 0.15;
+
+/**
  * Retimes one slice, exactly, by resampling.
  *
  * `asetrate` reinterprets the sample rate and `aresample` puts it back, which
@@ -603,8 +615,29 @@ export function buildSpeedCurveAudioGraph(
 	const retimed: string[] = [];
 	segments.forEach((segment, i) => {
 		const label = `${outputLabel}r${i}`;
-		const chain = ['atrim=' + `start=${edges[i]}:end=${edges[i + 1]}`, 'asetpts=PTS-STARTPTS'];
+		// A pitch-preserving stretch eats its own tail, so the slice is fed
+		// past its span and the result trimmed back to the length the video
+		// expects. The overhang is real audio from the next slice's territory,
+		// which the trim then discards — padding with silence instead would
+		// put a gap at every seam.
+		const overhang = curve.preservePitch ? STRETCH_OVERHANG_SECONDS * segment.rate : 0;
+		const inputEnd = Math.min(segment.end + overhang, duration).toFixed(6);
+
+		const chain = [`atrim=start=${edges[i]}:end=${inputEnd}`, 'asetpts=PTS-STARTPTS'];
 		chain.push(...retime(segment.rate));
+		if (overhang > 0) {
+			// The last slice has no neighbouring audio to overhang into, so it
+			// comes back one flush short — 23ms, measured. `apad` covers only
+			// what the overhang could not reach, and the trim below fixes the
+			// length either way. Silence at the very end of a clip is not
+			// something anyone hears; a clip that ends early is.
+			chain.push(
+				'apad',
+				`atrim=start=0:end=${segment.outputDuration.toFixed(6)}`,
+				'asetpts=PTS-STARTPTS'
+			);
+		}
+
 		parts.push(`[${branches[i]}]${chain.join(',')}[${label}]`);
 		retimed.push(label);
 	});

@@ -205,7 +205,7 @@ implementation of it.
 ## Testing
 
 ```bash
-cd apps/web && bun run test     # ~1071 tests
+cd apps/web && bun run test     # ~1098 tests
 cd apps/web && bun run check    # typecheck, expects 0 errors
 cd apps/desktop/src-tauri && cargo test
 ```
@@ -233,13 +233,16 @@ so a keyboard nudge cannot reach somewhere a drag may not. A group is clamped
 as a unit — clamping members individually stops the leftmost at zero and lets
 the rest keep sliding.
 
-**`atempo` cannot hit an exact length.** Measured against the bundled build it
-loses a fixed 20–27ms per instance regardless of input length — a window flush,
-not anything proportional — so a sliced speed curve came out 192ms short over
-six seconds. `asetrate` + `aresample` is sample-exact (0.200000, 1.000000,
-4.000000 against those targets) and shifts pitch, which is what physically
-happens when footage is sped up. A curve's `preservePitch` flag chooses:
-exact sync, or preserved pitch and accumulating drift.
+**No pitch-preserving stretch in FFmpeg hits an exact length.** `atempo` loses
+a fixed 20–27ms per instance and `rubberband` 55–70ms, both at the tail and
+both regardless of input length — a window flush, so no slice size avoids it.
+A sliced speed curve came out 192ms short over six seconds. The fix is to feed
+each slice past its own span and trim the result back, so the surplus is real
+neighbouring audio rather than silence; the final slice has no neighbour to
+borrow from and is padded instead. Measured: 0.037ms out over six seconds.
+`asetrate` + `aresample` needs none of this — it is sample-exact — but shifts
+pitch, which is what physically happens when footage is sped up, so a curve's
+`preservePitch` flag chooses between them.
 
 **Speed-curve audio follows the curve slice by slice.** The video retimes with
 a `setpts` expression; audio has no expression-driven equivalent, so the curve

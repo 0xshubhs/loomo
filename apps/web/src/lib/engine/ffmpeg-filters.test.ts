@@ -453,14 +453,47 @@ describe('buildSpeedCurveAudioGraph', () => {
 		}
 	});
 
-	it('cuts neighbouring slices at an identical boundary string', () => {
-		// A rounded gap between one slice's end and the next slice's start would
-		// silently drop or repeat samples at every seam.
+	it('starts each slice exactly where the last one ended', () => {
+		// The input trims overlap on purpose — a pitch-preserving stretch eats
+		// its own tail, so each slice is fed past its span and trimmed back.
+		// What must not drift is where each slice *starts*.
 		const parts = buildSpeedCurveAudioGraph('a0pre', curve([point(0, 1), point(7, 2.5)]), 7, 'a0');
+		const segments = buildSpeedCurveSegments(curve([point(0, 1), point(7, 2.5)]), 7);
+		const starts = parts
+			.map((p) => /atrim=start=([^:]+):end=/.exec(p))
+			.filter((m): m is RegExpExecArray => m !== null)
+			.map((m) => m[1])
+			.filter((v) => v !== '0');
+
+		expect(starts).toHaveLength(segments.length);
+		segments.forEach((segment, i) => {
+			expect(starts[i]).toBe(segment.start.toFixed(6));
+		});
+	});
+
+	it('trims every stretched slice back to the length the video expects', () => {
+		// This is what stops the overlap turning into repeated audio, and what
+		// makes the total match the picture: atempo alone came out 192ms short
+		// over six seconds.
+		const c = curve([point(0, 1), point(7, 2.5)]);
+		const parts = buildSpeedCurveAudioGraph('a0pre', c, 7, 'a0');
+		const segments = buildSpeedCurveSegments(c, 7);
+
+		for (const segment of segments) {
+			const wanted = `atrim=start=0:end=${segment.outputDuration.toFixed(6)}`;
+			expect(parts.some((p) => p.includes(wanted)), `no output trim for ${wanted}`).toBe(true);
+		}
+	});
+
+	it('does not overlap when resampling, which loses nothing to trim back', () => {
+		const exact: SpeedCurve = { enabled: true, preservePitch: false, points: [point(0, 1), point(7, 2.5)] };
+		const parts = buildSpeedCurveAudioGraph('a0pre', exact, 7, 'a0');
+		const segments = buildSpeedCurveSegments(exact, 7);
+
 		const trims = parts
 			.map((p) => /atrim=start=([^:]+):end=([^,\]]+)/.exec(p))
 			.filter((m): m is RegExpExecArray => m !== null);
-		expect(trims.length).toBeGreaterThan(1);
+		expect(trims).toHaveLength(segments.length);
 		for (let i = 1; i < trims.length; i++) {
 			expect(trims[i][1]).toBe(trims[i - 1][2]);
 		}
