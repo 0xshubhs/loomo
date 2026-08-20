@@ -1,10 +1,56 @@
 import type { Command } from './base-command.js';
-import type { Clip, ClipFilters, ClipTransform, ClipCrop, ChromaKey, ClipPosition, VideoEffect } from '$lib/types/index.js';
+import type { Clip, ClipFilters, ClipTransform, ClipCrop, ChromaKey, ClipPosition, VideoEffect, Marker } from '$lib/types/index.js';
 import { DEFAULT_VIDEO_EFFECT } from '$lib/types/index.js';
 import type { TimelineStore } from '$lib/state/timeline.svelte.js';
 import type { SilenceRegion } from '$lib/engine/silence-detector.js';
 import { generateId } from '$lib/utils/id.js';
 import { clampStart, clampTrimDelta, type TrimLimits } from '$lib/timeline/clip-bounds.js';
+import {
+	remapMarkers,
+	retimeMarkers,
+	shiftMarkersAfter,
+	type MovedSpan,
+} from '$lib/timeline/markers.js';
+
+/**
+ * Markers and the edits that move footage under them.
+ *
+ * A marker is a note about where something is, so an edit that slides footage
+ * along the timeline has to take the markers over that footage with it, or the
+ * note ends up describing the wrong moment. Only the edits that really do
+ * rearrange the timeline ripple them: `CloseGapCommand`, `RemoveGapsCommand`
+ * and a rippling `SetClipSpeedCommand`. An edit that leaves the surrounding
+ * footage where it was leaves the markers alone; the reasoning for each of
+ * those is on the command itself.
+ */
+
+/**
+ * Swaps the marker list for a rippled one, handing back the array it replaced.
+ *
+ * The list is only ever replaced wholesale, never edited in place, so the array
+ * that was there is a complete record of where every marker stood. That is what
+ * undo needs, because the ripple throws information away: markers stranded in a
+ * closed gap all collapse onto the same seam, and nothing in the new list says
+ * which of them came from where.
+ *
+ * Returns null when there is nothing to do, so a project with no markers is
+ * never handed a fresh array and nothing watching the list redraws for an edit
+ * that did not touch it.
+ */
+function swapMarkers(
+	timeline: TimelineStore,
+	ripple: (markers: Marker[]) => Marker[]
+): Marker[] | null {
+	const previous = timeline.markers;
+	if (!previous?.length) return null;
+
+	timeline.markers = ripple(previous);
+	return previous;
+}
+
+function restoreMarkers(timeline: TimelineStore, previous: Marker[] | null): void {
+	if (previous) timeline.markers = previous;
+}
 
 export class AddClipCommand implements Command {
 	readonly type = 'add-clip';
@@ -39,6 +85,12 @@ export class AddClipCommand implements Command {
 	}
 }
 
+/**
+ * Deleting a clip leaves a hole rather than closing one: nothing after it
+ * moves, so the markers after it are still over the footage they name and must
+ * not move either. Closing the hole is a separate action, and that one does
+ * ripple them.
+ */
 export class RemoveClipCommand implements Command {
 	readonly type = 'remove-clip';
 	readonly description: string;
@@ -73,6 +125,13 @@ export class RemoveClipCommand implements Command {
 	}
 }
 
+/**
+ * Markers do not follow a moved clip. Dragging one clip leaves the whole rest
+ * of the timeline where it was, so shifting the markers after the drop point
+ * would be moving them away from footage that never moved — and a clip can be
+ * dropped anywhere, which would make every marker in the project twitch every
+ * time one was nudged.
+ */
 export class MoveClipCommand implements Command {
 	readonly type = 'move-clip';
 	readonly description = 'Move clip';
@@ -187,6 +246,12 @@ export class SplitClipCommand implements Command {
 	}
 }
 
+/**
+ * Trimming an edge does not ripple: the neighbouring clips keep their starts,
+ * so a trim opens or closes a hole beside the clip instead of moving the rest
+ * of the timeline. The markers past it are over footage that has not moved and
+ * stay where they are. The same goes for `TrimToPlayheadCommand`.
+ */
 export class TrimClipCommand implements Command {
 	readonly type = 'trim-clip';
 	readonly description: string;
@@ -558,6 +623,7 @@ export class RemoveGapsCommand implements Command {
 	readonly type = 'remove-gaps';
 	readonly description = 'Remove gaps';
 	private previousStarts: Map<string, number> = new Map();
+	private previousMarkers: Marker[] | null = null;
 
 	constructor(
 		private timeline: TimelineStore,
@@ -566,6 +632,7 @@ export class RemoveGapsCommand implements Command {
 
 	execute(): void {
 		this.previousStarts.clear();
+		this.previousMarkers = null;
 		// Save all clip starts
 		for (const track of this.timeline.tracks) {
 			for (const clip of track.clips) {
@@ -577,6 +644,29 @@ export class RemoveGapsCommand implements Command {
 		} else {
 			this.timeline.removeAllGaps();
 		}
+
+		// This is the edit that hurts markers most: it can move every clip on the
+		// timeline by a different amount at once, so there is no delta to shift
+		// by and each marker has to be found again in the footage it was over.
+		//
+		// The spans are read back after the pack rather than predicted from the
+		// gaps, so the markers follow wherever the clips actually ended up —
+		// including the run-up before the first clip, which the pack removes too
+		// and which `findGaps` deliberately does not count as a gap.
+		const packed = this.trackId
+			? this.timeline.tracks.filter((t) => t.id === this.trackId)
+			: this.timeline.tracks;
+
+		const spans: MovedSpan[] = [];
+		for (const track of packed) {
+			for (const clip of track.clips) {
+				const from = this.previousStarts.get(clip.id);
+				if (from === undefined) continue;
+				spans.push({ from, to: clip.timelineStart, duration: clip.duration });
+			}
+		}
+
+		this.previousMarkers = swapMarkers(this.timeline, (markers) => remapMarkers(markers, spans));
 	}
 
 	undo(): void {
@@ -588,10 +678,19 @@ export class RemoveGapsCommand implements Command {
 				}
 			}
 		}
+		restoreMarkers(this.timeline, this.previousMarkers);
 		this.timeline.tracks = [...this.timeline.tracks];
 	}
 }
 
+/**
+ * The kept pieces pack together inside the clip's own span and everything after
+ * the clip stays where it was, so the markers beyond it are still over their
+ * footage and are left alone. Markers inside the clip are the one case this
+ * does not follow: the footage under them is cut into an arbitrary number of
+ * pieces, and for a marker that was sitting in one of the removed silences
+ * there is no answer better than leaving it where the user put it.
+ */
 export class RemoveSilencesCommand implements Command {
 	readonly type = 'remove-silences';
 	readonly description = 'Remove silences';
@@ -704,6 +803,7 @@ export class CloseGapCommand implements Command {
 	readonly description = 'Close gap';
 
 	private previousStarts = new Map<string, number>();
+	private previousMarkers: Marker[] | null = null;
 
 	constructor(
 		private timeline: TimelineStore,
@@ -720,6 +820,7 @@ export class CloseGapCommand implements Command {
 		if (shift <= 0) return;
 
 		this.previousStarts.clear();
+		this.previousMarkers = null;
 		for (const clip of track.clips) {
 			// Everything starting at or after the gap moves back by its width.
 			if (clip.timelineStart >= this.gapEnd - 0.0001) {
@@ -727,6 +828,19 @@ export class CloseGapCommand implements Command {
 				clip.timelineStart = Math.max(0, clip.timelineStart - shift);
 			}
 		}
+
+		// The markers go with the footage. Shifting from the start of the gap
+		// rather than its end so that a marker left standing in the empty space
+		// lands on the seam instead of being carried back past the clip in front
+		// of it, which never moved.
+		//
+		// On a multi-track project the other tracks keep their footage where it
+		// was, so nothing can keep every track under the marker at once. It
+		// follows the track the user just asked to be shortened.
+		this.previousMarkers = swapMarkers(this.timeline, (markers) =>
+			shiftMarkersAfter(markers, this.gapStart, -shift)
+		);
+
 		this.timeline.tracks = [...this.timeline.tracks];
 	}
 
@@ -737,6 +851,7 @@ export class CloseGapCommand implements Command {
 			const previous = this.previousStarts.get(clip.id);
 			if (previous !== undefined) clip.timelineStart = previous;
 		}
+		restoreMarkers(this.timeline, this.previousMarkers);
 		this.timeline.tracks = [...this.timeline.tracks];
 	}
 }
@@ -819,6 +934,7 @@ export class SetClipSpeedCommand implements Command {
 	private previousSpeed = 1;
 	private previousDuration = 0;
 	private rippled = new Map<string, number>();
+	private previousMarkers: Marker[] | null = null;
 
 	constructor(
 		private timeline: TimelineStore,
@@ -857,6 +973,15 @@ export class SetClipSpeedCommand implements Command {
 			}
 		}
 
+		// Markers inside the clip are rescaled rather than shifted: the frame
+		// they mark is still the same fraction of the way through the clip, but
+		// the clip now occupies a different number of seconds, and a marker left
+		// at its old time would point past the clip's new end. Markers after the
+		// clip only move when the neighbours did.
+		this.previousMarkers = swapMarkers(this.timeline, (markers) =>
+			retimeMarkers(markers, clip.timelineStart, this.previousDuration, newDuration, this.ripple)
+		);
+
 		this.timeline.tracks = [...this.timeline.tracks];
 	}
 
@@ -871,6 +996,7 @@ export class SetClipSpeedCommand implements Command {
 			const previous = this.rippled.get(other.id);
 			if (previous !== undefined) other.timelineStart = previous;
 		}
+		restoreMarkers(this.timeline, this.previousMarkers);
 		this.timeline.tracks = [...this.timeline.tracks];
 	}
 }

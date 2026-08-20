@@ -205,7 +205,7 @@ implementation of it.
 ## Testing
 
 ```bash
-cd apps/web && bun run test     # ~1016 tests
+cd apps/web && bun run test     # ~1071 tests
 cd apps/web && bun run check    # typecheck, expects 0 errors
 cd apps/desktop/src-tauri && cargo test
 ```
@@ -232,6 +232,23 @@ the media has or trim the clip to a negative length. The rules live in
 so a keyboard nudge cannot reach somewhere a drag may not. A group is clamped
 as a unit — clamping members individually stops the leftmost at zero and lets
 the rest keep sliding.
+
+**`atempo` cannot hit an exact length.** Measured against the bundled build it
+loses a fixed 20–27ms per instance regardless of input length — a window flush,
+not anything proportional — so a sliced speed curve came out 192ms short over
+six seconds. `asetrate` + `aresample` is sample-exact (0.200000, 1.000000,
+4.000000 against those targets) and shifts pitch, which is what physically
+happens when footage is sped up. A curve's `preservePitch` flag chooses:
+exact sync, or preserved pitch and accumulating drift.
+
+**Speed-curve audio follows the curve slice by slice.** The video retimes with
+a `setpts` expression; audio has no expression-driven equivalent, so the curve
+is cut into constant-rate slices fine enough that the difference is inaudible.
+Slice lengths come from the difference of the same closed-form integral the
+`setpts` expression uses, so they telescope to exactly the video's length
+whatever the slicing. Cuts are laid left to right taking the longest step that
+stays in tolerance — bisection cannot reach the sizes a steep slow section
+needs, and left the first tenth of a 0.25x ramp 14.7ms out.
 
 **Silence detection runs in ffmpeg, not in the page.** `silencedetect`
 streams the file and prints the regions to its log, so nothing but text comes

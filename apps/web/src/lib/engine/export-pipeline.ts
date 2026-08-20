@@ -30,6 +30,7 @@ import {
 	buildMosaicSubgraph,
 	buildDenoiseFilter,
 	buildSpeedCurveSetpts,
+	buildSpeedCurveAudioGraph,
 	averageSpeed,
 	hasVideoEffect,
 	hasMosaics,
@@ -1237,11 +1238,9 @@ async function exportFilterComplex(
 		if (denoise) audioFilters.push(denoise);
 		const keyframeVolume = buildKeyframeVolumeFilter(clip);
 		if (keyframeVolume) audioFilters.push(keyframeVolume);
-		// Audio cannot follow a varying rate, so a curve is approximated by its
-		// mean; see averageSpeed for why.
-		if (curveFilter) {
-			audioFilters.push(...buildAtempoChain(averageSpeed(clip.speedCurve!)));
-		}
+		// A curve is retimed slice by slice further down, so nothing is added
+		// here for it. It used to be stretched by its mean rate, which put a
+		// 30-second ramp the better part of a second out of step by the end.
 		const audioInput = silentInputFor.get(i) ?? i;
 		// A still's silent input starts at zero however the clip was trimmed.
 		const audioStart = clip.type === 'image' ? 0 : clip.sourceStart;
@@ -1249,9 +1248,16 @@ async function exportFilterComplex(
 		if (audioFilters.length > 0) {
 			aChain += ',' + audioFilters.join(',');
 		}
-		filterParts.push(
-			`${aChain}[${aLabel}]`
-		);
+		if (curveFilter) {
+			// The curve is followed exactly, one constant-rate slice at a time,
+			// so the audio ends where the picture does.
+			filterParts.push(`${aChain}[${aLabel}pre]`);
+			filterParts.push(
+				...buildSpeedCurveAudioGraph(`${aLabel}pre`, clip.speedCurve!, clip.duration, aLabel)
+			);
+		} else {
+			filterParts.push(`${aChain}[${aLabel}]`);
+		}
 	}
 
 	if (sortedClips.length > 1) {

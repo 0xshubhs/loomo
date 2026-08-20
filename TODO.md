@@ -92,8 +92,10 @@ Tensor input/output names are guesses until a model actually loads.
 
 - **Mosaic regions** are slider-driven; they should be draggable on the
   preview. The annotation layer proves that interaction works.
-- **Speed-curve audio** is stretched by the *average* rate, so long ramps
-  drift. Exact variable-rate audio needs per-segment resampling.
+- **Pitch-preserving speed curves still drift.** `atempo` loses a fixed
+  20–27ms per instance, so a curve with `preservePitch` set accumulates error
+  the resampling path does not have. Correct sync needs a filter that
+  time-stretches exactly, or a final length correction.
 - **Preview audio window fetches are not cancelled.** Scrubbing quickly
   across a long clip queues extractions for windows the playhead has already
   left. They are cheap and the cache bounds memory, but the work is wasted.
@@ -109,6 +111,13 @@ Tensor input/output names are guesses until a model actually loads.
 ---
 
 ### Fixed since the last pass
+
+- **Speed-curve audio** followed the mean rate and drifted; it now follows the
+  curve slice by slice, verified against real ffmpeg at 0.37ms out over six
+  seconds (was 192ms on the pitch-preserving path).
+- **Captions and bed audio** — windowed transcription, and the same drift
+  correction the base clip gets.
+- **Markers ripple** with gap closing and retiming, undoably.
 
 - **Autosave recopied every asset, every time.** `projects_import_media` did
   an unconditional `fs::copy`, and autosave asks for every asset every thirty

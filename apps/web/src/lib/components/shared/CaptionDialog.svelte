@@ -5,6 +5,7 @@
 	import { downloadSRT } from '$lib/utils/srt.js';
 	import type { CaptionSegment, CaptionStyle } from '$lib/types/index.js';
 	import { assetBlob } from '$lib/engine/asset-bytes.js';
+	import { transcribeInWindows, CANCELLED_MESSAGE } from '$lib/engine/windowed-transcription.js';
 	import type { FFmpegEngine } from '$lib/engine/ffmpeg-engine.js';
 	import Modal from './Modal.svelte';
 	import Button from './Button.svelte';
@@ -101,17 +102,31 @@
 		abortController = new AbortController();
 
 		try {
-			// Not `fetch(asset.blobUrl)`: an asset picked through the OS
-			// dialog or reopened from a project has no blob url, because its
-			// bytes never entered the page.
-			const audioBlob = await assetBlob(asset, ffmpeg);
-
-			const segments = await transcribeAudio(
-				audioBlob,
-				language,
-				(status) => { statusText = status; },
-				abortController.signal
-			);
+			// A window at a time when there is a scratch copy and an engine to
+			// read it with. The whole-file route below decodes the entire
+			// source into the page — ~40MB per minute — which put a 50-minute
+			// recording over a gigabyte and made captions unavailable on
+			// exactly the files people want them for.
+			const segments =
+				asset.scratchName && ffmpeg
+					? await transcribeInWindows({
+							engine: ffmpeg,
+							scratchName: asset.scratchName,
+							assetId: asset.id,
+							durationSeconds: asset.metadata.duration,
+							language,
+							onProgress: (status) => { statusText = status; },
+							abortSignal: abortController.signal,
+						})
+					: await transcribeAudio(
+							// Not `fetch(asset.blobUrl)`: an asset picked through
+							// the OS dialog has no blob url, because its bytes
+							// never entered the page.
+							await assetBlob(asset, ffmpeg),
+							language,
+							(status) => { statusText = status; },
+							abortController.signal
+						);
 
 			if (segments.length === 0) {
 				errorText = 'No speech detected. Try a different language or ensure the video has audible speech.';
@@ -119,7 +134,7 @@
 				captions.setCaptions(segments);
 			}
 		} catch (err: any) {
-			if (err.message !== 'Transcription cancelled') {
+			if (err.message !== CANCELLED_MESSAGE) {
 				errorText = err.message || 'Transcription failed';
 			}
 		} finally {
