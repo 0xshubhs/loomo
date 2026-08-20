@@ -3,6 +3,7 @@
 	import { detectSilences, analyzeAudioFromBlob, type SilenceRegion, type SilenceOptions } from '$lib/engine/silence-detector.js';
 	import { RemoveSilencesCommand } from '$lib/commands/clip-commands.js';
 	import { assetBlob } from '$lib/engine/asset-bytes.js';
+	import { silenceDetectArgs, parseSilenceOutput } from '$lib/engine/silence-detector.js';
 	import type { FFmpegEngine } from '$lib/engine/ffmpeg-engine.js';
 	import Modal from './Modal.svelte';
 	import Button from './Button.svelte';
@@ -47,6 +48,29 @@
 		return null;
 	}
 
+	/**
+	 * Runs the analysis pass and reads the regions out of what ffmpeg logged.
+	 *
+	 * The filter writes no file; `-f null -` runs the graph and discards the
+	 * frames, so this costs one read of the source and nothing else.
+	 */
+	async function detectSilencesWithFfmpeg(
+		engine: FFmpegEngine,
+		scratchName: string,
+		options: SilenceOptions,
+		sourceDuration: number
+	) {
+		const lines: string[] = [];
+		await engine.exec(silenceDetectArgs(scratchName, options), {
+			onLog: (line) => {
+				// Only the filter's own lines; ffmpeg's progress output would
+				// otherwise grow this to thousands of entries.
+				if (line.includes('silence_')) lines.push(line);
+			},
+		});
+		return parseSilenceOutput(lines, sourceDuration);
+	}
+
 	async function handleAnalyze() {
 		errorText = '';
 		const clip = getSelectedClip();
@@ -64,15 +88,28 @@
 		analyzing = true;
 
 		try {
-			if (!audioBuffer) {
-				// Not `fetch(asset.blobUrl)`: see assetBlob — an asset whose
-				// bytes live on disk has no blob url to fetch.
-				const blob = await assetBlob(asset, ffmpeg);
-				audioBuffer = await analyzeAudioFromBlob(blob);
+			const options: SilenceOptions = { threshold, minDuration };
+
+			if (asset.scratchName && ffmpeg) {
+				// ffmpeg streams the file and reports the regions in its log,
+				// so nothing but text comes back. Decoding to an AudioBuffer
+				// first is ~40MB per minute, which put a 50-minute source over
+				// a gigabyte and made this unusable on a real recording.
+				silences = await detectSilencesWithFfmpeg(
+					ffmpeg,
+					asset.scratchName,
+					options,
+					asset.metadata.duration
+				);
+			} else {
+				// The web build has no bundled binary to ask.
+				if (!audioBuffer) {
+					const blob = await assetBlob(asset, ffmpeg);
+					audioBuffer = await analyzeAudioFromBlob(blob);
+				}
+				silences = detectSilences(audioBuffer, options);
 			}
 
-			const options: SilenceOptions = { threshold, minDuration };
-			silences = detectSilences(audioBuffer, options);
 			selected = silences.map(() => true);
 			analyzed = true;
 

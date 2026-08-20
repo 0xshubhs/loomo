@@ -110,6 +110,15 @@ Tensor input/output names are guesses until a model actually loads.
 
 ### Fixed since the last pass
 
+- **Autosave recopied every asset, every time.** `projects_import_media` did
+  an unconditional `fs::copy`, and autosave asks for every asset every thirty
+  seconds — on a timeline holding two 900 MB sources that was 1.8 GB rewritten
+  twice a minute. It now skips a destination that already holds a file of the
+  same length, which is sufficient because the source is a scratch copy
+  written once at import and never modified.
+- **Silence detection now works on large files**, via ffmpeg's `silencedetect`
+  rather than decoding the whole source in the page.
+
 - **Clips had no bounds.** Dragging one left from the start ran its
   `timelineStart` negative and it kept going; the trim handles could seek
   before the beginning of the media, extend past its end, or reduce a clip to
@@ -118,10 +127,10 @@ Tensor input/output names are guesses until a model actually loads.
 - **Preview audio decoded whole clips.** ~40 MB/minute, so a 50-minute source
   reached ~2.5 GB and the app was OOM-killed mid-import. It reads 30-second
   windows now, holding two.
-- **Captions and silence detection read the whole file** into the page. A
-  978 MB source is three gigabytes once the IPC copies are counted; they now
-  refuse above 400 MB with a message saying to split the clip instead. Doing
-  these in windows is the real fix and is not done.
+- **Captions still read the whole file** into the page and refuse above
+  400 MB. Silence detection was moved to ffmpeg; captions cannot be, because
+  the Web Speech API needs the audio itself — it needs chunking into windows
+  and transcribing each, which is not done.
 
 - **Import by path, not through the webview.** WebKitGTK's file input
   percent-decodes the filename it reports; a file actually named

@@ -219,6 +219,21 @@ pub fn projects_import_media(
     fs::create_dir_all(&media_dir).map_err(|e| e.to_string())?;
 
     let destination = media_dir.join(name);
+
+    // Skip the copy when the project already holds these bytes. Autosave runs
+    // every thirty seconds and asks for every asset each time; on a timeline
+    // holding two 900 MB sources that was 1.8 GB rewritten twice a minute.
+    //
+    // Size is enough to compare on: the source is a scratch copy written once
+    // at import and never modified afterwards, so a same-named file of the
+    // same length is the same file.
+    let source_len = fs::metadata(&source)
+        .map(|m| m.len())
+        .map_err(|e| format!("cannot read {source}: {e}"))?;
+    if fs::metadata(&destination).map(|m| m.len()).ok() == Some(source_len) {
+        return Ok(destination.to_string_lossy().into_owned());
+    }
+
     fs::copy(&source, &destination).map_err(|e| format!("cannot import {source}: {e}"))?;
     Ok(destination.to_string_lossy().into_owned())
 }

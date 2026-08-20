@@ -205,7 +205,7 @@ implementation of it.
 ## Testing
 
 ```bash
-cd apps/web && bun run test     # ~997 tests
+cd apps/web && bun run test     # ~1016 tests
 cd apps/web && bun run check    # typecheck, expects 0 errors
 cd apps/desktop/src-tauri && cargo test
 ```
@@ -232,6 +232,13 @@ the media has or trim the clip to a negative length. The rules live in
 so a keyboard nudge cannot reach somewhere a drag may not. A group is clamped
 as a unit — clamping members individually stops the leftmost at zero and lets
 the rest keep sliding.
+
+**Silence detection runs in ffmpeg, not in the page.** `silencedetect`
+streams the file and prints the regions to its log, so nothing but text comes
+back. Decoding to an AudioBuffer first is the same ~40MB per minute that broke
+preview audio, and it made the feature unusable on any real recording. The
+parser was checked against output captured from the bundled binary rather than
+written from the documentation.
 
 **Preview audio is extracted a window at a time.** Decoding a whole clip did
 not survive a real file: a 50-minute source produced a 536 MB WAV, read back
